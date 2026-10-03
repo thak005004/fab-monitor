@@ -1,0 +1,32 @@
+{
+  "version": "2026-10-05-a",
+  "sigma_threshold": 3.0,
+  "run_length": 9,
+  "trend_length": 6,
+  "trending_log_only": true,
+  "baseline_window_ticks": 120,
+  "min_baseline_points": 100,
+  "stddev_floor": 0.01,
+  "cpk_threshold": 1.33,
+  "dropout_threshold_ticks": 5,
+  "escalation_ticks": 10,
+  "persistence_ticks": 15,
+  "dismissal_cooldown_ticks": 10,
+  "stale_after_ticks": 20,
+  "reactivation_quiet_ticks": 10,
+  "diagnosis_lookback_ticks": 120,
+  "max_evidence_readings": 30,
+  "onset_grace_ticks": 2,
+  "diagnosis_timeout_seconds": 15,
+  "diagnosis_model": "claude-opus-5-5",
+  "max_diagnoses_per_tick": 3,
+  "severity_map": {
+    "beyond_spec": "high",
+    "beyond_3sigma": "low",
+    "sustained_run": "medium",
+    "dropout": "medium",
+    "capability_degraded": "medium",
+    "trending": "low"
+  },
+  "oncall_person_id": "P-ONCALL"
+}
