@@ -1,0 +1,8 @@
+# Everything the dashboard (dashboard/app.py) needs, pinned to the versions in .venv.
+# Python 3.11+ (the code uses match statements; developed on 3.12).
+streamlit==1.65.0
+altair==6.3.0
+pandas==3.0.6
+numpy==2.5.3
+pydantic==2.13.5
+anthropic==1.11.0

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -39,9 +40,30 @@ st.set_page_config(page_title="Fab Tool Monitor (simulated)", layout="wide")
 
 # ----- session -----------------------------------------------------------------
 
+HOSTED_BANNER = "**Simulated data, scripted model responses.** The live model runs in the local version."
+LOCAL_BANNER = "**Simulated data.** Every tool, sensor, person, lot and reading on this page is synthetic."
+
+
+def _truthy(value) -> bool:
+    return str(value).strip().lower() not in ("", "0", "false", "no", "none")
+
+
+def hosted_mode() -> bool:
+    """FAB_MONITOR_HOSTED set in the environment, or as a Streamlit secret (Community Cloud)."""
+    if _truthy(os.environ.get("FAB_MONITOR_HOSTED", "")):
+        return True
+    try:
+        return _truthy(st.secrets.get("FAB_MONITOR_HOSTED", ""))
+    except Exception:  # no secrets file at all: not hosted
+        return False
+
+
 def make_llm():
-    """Claude if a key is available (or FAB_MONITOR_LLM=anthropic), else the scripted fake.
-    FAB_MONITOR_LLM=fake forces the fake (used by the tests)."""
+    """Hosted: always the scripted fake, and no API key is ever read.
+    Local: Claude if a key is available (or FAB_MONITOR_LLM=anthropic), else the
+    scripted fake. FAB_MONITOR_LLM=fake forces the fake (used by the tests)."""
+    if hosted_mode():
+        return FakeClient("valid"), "Scripted fake client (hosted demo)"
     choice = os.environ.get("FAB_MONITOR_LLM") or ("anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "fake")
     if choice == "anthropic":
         model = load_config().diagnosis_model
@@ -50,8 +72,16 @@ def make_llm():
 
 
 def load_demo() -> None:
+    """A fresh demo in a fresh database. Each browser session has its own
+    st.session_state, so its own database folder: visitors never share state.
+    Reloading replaces this session's database and removes the old one."""
+    old = st.session_state.get("system")
+    if old is not None:
+        old.conn.close()
+        shutil.rmtree(st.session_state.db_dir, ignore_errors=True)
     llm, label = make_llm()
-    db_path = Path(tempfile.mkdtemp(prefix="fab-monitor-")) / "dashboard.db"
+    st.session_state.db_dir = tempfile.mkdtemp(prefix="fab-monitor-")
+    db_path = Path(st.session_state.db_dir) / "dashboard.db"
     st.session_state.system = build_system(
         db_path, seed=42, llm=llm, faults_after_warmup=demo_faults(DEFAULT_WARMUP_TICKS), check_same_thread=False,
     )
@@ -136,7 +166,7 @@ with st.sidebar:
 
 # ----- header ---------------------------------------------------------------------
 
-st.error("**Simulated data.** Every tool, sensor, person, lot and reading on this page is synthetic.", icon="⚠️")
+st.error(HOSTED_BANNER if hosted_mode() else LOCAL_BANNER, icon="⚠️")
 if "flash" in st.session_state:
     kind, text = st.session_state.pop("flash")
     getattr(st, kind)(text)

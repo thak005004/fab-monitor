@@ -4,12 +4,13 @@ so these never call the real API."""
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from agents.diagnosis.client import FailingClient
+from agents.diagnosis.client import FailingClient, FakeClient
 
 APP = str(Path(__file__).resolve().parents[1] / "dashboard" / "app.py")
 
@@ -105,3 +106,72 @@ def test_drift_incident_detail_citations_and_acknowledge(at):
     at.selectbox(key="inbox_person").set_value(owner).run()
     assert any(inc["incident_id"] in e.label for e in at.expander)
     assert json.loads(inc["lots_at_risk"])
+
+
+# ----- per-session databases and hosted mode -------------------------------------
+
+def test_each_session_gets_its_own_database_and_never_shares_state(at):
+    other = AppTest.from_file(APP, default_timeout=120)
+    other.run()
+    assert not other.exception
+    a_dir, b_dir = Path(at.session_state.db_dir), Path(other.session_state.db_dir)
+    assert a_dir != b_dir
+    assert str(a_dir).startswith(tempfile.gettempdir()) and str(b_dir).startswith(tempfile.gettempdir())
+    assert (a_dir / "dashboard.db").exists() and (b_dir / "dashboard.db").exists()
+
+    click(at, "+10", at.sidebar)
+    click(at, "Send a malformed event", at.sidebar)
+    other.run()
+    assert metric(at, "Tick") == "160" and metric(at, "Dead-letter records") == "1"
+    assert metric(other, "Tick") == "150" and metric(other, "Dead-letter records") == "0"
+    assert other.session_state.system.conn.execute("SELECT COUNT(*) FROM dead_letter").fetchone()[0] == 0
+
+
+def test_reloading_the_demo_replaces_this_sessions_database(at):
+    old_dir = Path(at.session_state.db_dir)
+    click(at, "+10", at.sidebar)
+    click(at, "Load demo scenario", at.sidebar)
+    assert metric(at, "Tick") == "150"
+    assert not old_dir.exists()
+    assert Path(at.session_state.db_dir).exists()
+
+
+def test_hosted_mode_from_env_uses_the_fake_and_never_reads_an_api_key(monkeypatch):
+    import os
+
+    import agents.diagnosis.client as client_module
+
+    monkeypatch.setenv("FAB_MONITOR_HOSTED", "1")
+    monkeypatch.setenv("FAB_MONITOR_LLM", "anthropic")  # would pick Claude locally
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy-not-a-real-key")
+    looked_up = []
+    real_get = os.environ.get
+    monkeypatch.setattr(os.environ, "get", lambda key, default=None: looked_up.append(key) or real_get(key, default))
+
+    def no_real_client(*args, **kwargs):
+        raise AssertionError("AnthropicClient must not be built in hosted mode")
+    monkeypatch.setattr(client_module, "AnthropicClient", no_real_client)
+
+    app = AppTest.from_file(APP, default_timeout=120)
+    app.run()
+    assert not app.exception, app.exception
+    assert any("Simulated data, scripted model responses" in e.value and "live model runs in the local version" in e.value
+               for e in app.error)
+    assert isinstance(app.session_state.llm, FakeClient)
+    assert "ANTHROPIC_API_KEY" not in looked_up
+    assert any("hosted demo" in c.value for c in app.sidebar.caption)
+
+
+def test_hosted_mode_from_streamlit_secret(monkeypatch):
+    monkeypatch.delenv("FAB_MONITOR_HOSTED", raising=False)
+    monkeypatch.setenv("FAB_MONITOR_LLM", "fake")
+    app = AppTest.from_file(APP, default_timeout=120)
+    app.secrets["FAB_MONITOR_HOSTED"] = "true"
+    app.run()
+    assert not app.exception, app.exception
+    assert any("scripted model responses" in e.value for e in app.error)
+
+
+def test_local_banner_is_unchanged(at):
+    assert any(e.value.startswith("**Simulated data.** Every tool, sensor, person, lot and reading") for e in at.error)
+    assert not any("scripted model responses" in e.value for e in at.error)

@@ -42,6 +42,16 @@ It opens on a demo scenario: a drift on T-01's temperature right after a planted
 
 Diagnoses use Claude when `ANTHROPIC_API_KEY` is set, and the scripted fake client otherwise. Set `FAB_MONITOR_LLM=fake` to force the fake. The key is read only from the environment and never stored or printed.
 
+## Hosted demo
+
+The dashboard can run on Streamlit Community Cloud: point the app at `dashboard/app.py`, choose Python 3.11 or later, and it installs from `requirements.txt`. Set `FAB_MONITOR_HOSTED` (any non-empty value except `0` or `false`), either as an environment variable or as a secret in the app's settings. In hosted mode:
+
+- Diagnoses always come from the scripted fake client. No API key is ever read, so there is nothing to leak and no API cost.
+- The banner reads "Simulated data, scripted model responses. The live model runs in the local version."
+- Every browser session gets its own SQLite database in a temporary folder, created when the session starts. Visitors never share state, and "Load demo scenario" replaces only that visitor's database.
+
+Without `FAB_MONITOR_HOSTED`, the dashboard behaves as described above (Claude if `ANTHROPIC_API_KEY` is set).
+
 ## Run the evaluation
 
 ```
