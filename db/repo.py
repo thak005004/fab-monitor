@@ -231,6 +231,19 @@ def activate_baseline(conn, sensor_id: str, mean: float, stddev: float, activate
     )
 
 
+def record_baseline_window(conn, sensor_id: str, kind: str, window_start: str, activated_at: str) -> None:
+    conn.execute(
+        "INSERT INTO baseline_windows (sensor_id, kind, window_start, activated_at) VALUES (?, ?, ?, ?)",
+        (sensor_id, kind, window_start, activated_at),
+    )
+
+
+def baseline_windows(conn, sensor_id: str, kind: str) -> list:
+    return conn.execute(
+        "SELECT * FROM baseline_windows WHERE sensor_id = ? AND kind = ? ORDER BY activated_at", (sensor_id, kind)
+    ).fetchall()
+
+
 def extend_baseline_window(conn, sensor_id: str, locked_until: str) -> None:
     conn.execute("UPDATE sensor_state SET baseline_locked_until = ? WHERE sensor_id = ?", (locked_until, sensor_id))
 

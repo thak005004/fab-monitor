@@ -213,6 +213,15 @@ CREATE TABLE config_versions (
   rejected_reason TEXT               -- set if validation failed
 );
 
+-- ===== Baseline history: one row per closed learning/relearning window =====
+CREATE TABLE baseline_windows (
+  sensor_id TEXT NOT NULL REFERENCES sensors(sensor_id),
+  kind TEXT NOT NULL,                -- learning | relearning
+  window_start TEXT NOT NULL,
+  activated_at TEXT NOT NULL,        -- when the window closed and its limits became active
+  PRIMARY KEY (sensor_id, activated_at)
+);
+
 -- ===== Log-only rule firings (e.g. trending): recorded for the dashboard, never open incidents =====
 CREATE TABLE logged_firings (
   firing_id TEXT PRIMARY KEY,        -- e.g. LF-000001
@@ -324,6 +333,7 @@ learning ──(window closes, enough points)──> active ──(recipe change
   - Drift of 0.01σ per tick: to medium or higher, median 75 ticks (frozen) vs 98 (rolling), and rolling missed 2% of runs within 300 ticks.
   - With the earlier 30-point baseline and `run_length` 8, the 0.05σ/tick numbers were 22 vs 29 ticks to the first incident.
   - So the honest claim is "slower, and the limits drift with the process", not "never detected".
+- **History:** every window that closes is recorded in `baseline_windows` (sensor, `learning`/`relearning`, start, activation time), so the dashboard draws relearning bands at their real length, including windows that were extended.
 - **Recipe change** → `relearning` (see §5). When that window closes and new limits activate, run the **capability check**:
   - `Cpk = min(spec_upper − mean, mean − spec_lower) / (3 × stddev)`
   - If `Cpk < cpk_threshold` (default 1.33, a commonly used minimum), raise a `capability_degraded` trigger with onset = the recipe change time.

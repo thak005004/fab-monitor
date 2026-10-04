@@ -47,6 +47,17 @@ def capability_check(mean: float, stddev: float, spec_lower: float, spec_upper: 
     return c, c >= threshold
 
 
+def relearning_windows(conn: sqlite3.Connection, sensor_id: str, clock: Clock) -> list[tuple[str, str, bool]]:
+    """(start, end, ongoing) for each relearning window this sensor went through:
+    finished ones from the stored history (exact, including any extension for
+    lack of points), plus the current one if it is still relearning."""
+    windows = [(w["window_start"], w["activated_at"], False) for w in repo.baseline_windows(conn, sensor_id, "relearning")]
+    state = repo.get_sensor_state(conn, sensor_id)
+    if state["baseline_status"] == "relearning":
+        windows.append((state["baseline_window_start"], clock.now_iso(), True))
+    return windows
+
+
 def close_due_windows(conn: sqlite3.Connection, clock: Clock, config: Config) -> list[WindowClosure]:
     """Called on each TICK. Closes every learning/relearning window that has ended."""
     now = clock.now_iso()
@@ -64,6 +75,7 @@ def close_due_windows(conn: sqlite3.Connection, clock: Clock, config: Config) ->
 
         mean, stddev = control_limits(values, config.stddev_floor)
         repo.activate_baseline(conn, sid, mean, stddev, now)
+        repo.record_baseline_window(conn, sid, row["baseline_status"], row["baseline_window_start"], now)
         c = ok = None
         if relearn:
             c, ok = capability_check(mean, stddev, row["spec_lower"], row["spec_upper"], config.cpk_threshold)

@@ -6,8 +6,9 @@ import itertools
 
 import pytest
 
-from sim.faults import GradualDrift, RecipeChangeNoFault, RecipeChangeOutOfSpec
-from state.baseline import capability_check, control_limits, cpk
+from db import repo
+from sim.faults import Dropout, GradualDrift, RecipeChangeNoFault, RecipeChangeOutOfSpec
+from state.baseline import capability_check, control_limits, cpk, relearning_windows
 
 from .conftest import WARMUP, make_system
 
@@ -150,7 +151,7 @@ def test_recipe_change_near_spec_limit_raises_capability_degraded(system):
     assert inc["lots_at_risk"] != "[]"
 
 
-# ----- faults 5 and 6 ------------------------------
+# ----- faults 5 and 6, and the stored window history ------------------------------
 
 def _since(system, sid, start_tick):
     return [i for i in system.incidents(sid) if i["opened_at"] >= system.clock.iso_at(start_tick)]
@@ -207,3 +208,25 @@ def test_fault_6_out_of_spec_reading_during_relearning_raises_beyond_spec(system
     assert inc["opened_at"] == system.clock.iso_at(excursion)
     assert system.conn.execute("SELECT COUNT(*) FROM notifications WHERE incident_id = ?", (inc["incident_id"],)).fetchone()[0] == 1
     assert system.conn.execute("SELECT expected_outcome FROM fault_injections WHERE fault_id = ?", (fid,)).fetchone()[0] == "incident:beyond_spec"
+
+
+def test_relearning_bands_use_the_stored_window_lengths(system):
+    """A relearning window that had to be extended (too few points) is drawn at
+    its real length, not the default baseline_window_ticks."""
+    sid = "S-05-TEMP"
+    window = system.config.baseline_window_ticks
+    learning = repo.baseline_windows(system.conn, sid, "learning")
+    assert [(system.clock.tick_of(w["window_start"]), system.clock.tick_of(w["activated_at"])) for w in learning] == [(0, window)]
+
+    start = system.clock.tick + 1
+    system.sim.inject(RecipeChangeNoFault(sid, start_tick=start))
+    system.sim.inject(Dropout(sid, start_tick=start + 1, duration_ticks=40))  # leaves 80 points < 100 in the window
+    system.run_until(start + window)
+    assert system.sensor_state(sid)["baseline_status"] == "relearning"  # extended
+    [(a, b, ongoing)] = relearning_windows(system.conn, sid, system.clock)
+    assert ongoing and system.clock.tick_of(a) == start
+
+    system.run_until(start + 2 * window)
+    assert system.sensor_state(sid)["baseline_status"] == "active"
+    [(a, b, ongoing)] = relearning_windows(system.conn, sid, system.clock)
+    assert (system.clock.tick_of(a), system.clock.tick_of(b), ongoing) == (start, start + 2 * window, False)

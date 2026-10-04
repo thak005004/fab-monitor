@@ -152,6 +152,15 @@ CREATE TABLE config_versions (
   rejected_reason TEXT               -- set if validation failed
 );
 
+-- ===== Baseline history: one row per closed learning/relearning window =====
+CREATE TABLE baseline_windows (
+  sensor_id TEXT NOT NULL REFERENCES sensors(sensor_id),
+  kind TEXT NOT NULL,                -- learning | relearning
+  window_start TEXT NOT NULL,
+  activated_at TEXT NOT NULL,        -- when the window closed and its limits became active
+  PRIMARY KEY (sensor_id, activated_at)
+);
+
 -- ===== Log-only rule firings (e.g. trending): recorded for the dashboard, never open incidents =====
 CREATE TABLE logged_firings (
   firing_id TEXT PRIMARY KEY,        -- e.g. LF-000001
