@@ -6,7 +6,7 @@ import itertools
 
 import pytest
 
-from sim.faults import GradualDrift
+from sim.faults import GradualDrift, RecipeChangeNoFault, RecipeChangeOutOfSpec
 from state.baseline import capability_check, control_limits, cpk
 
 from .conftest import WARMUP, make_system
@@ -148,3 +148,62 @@ def test_recipe_change_near_spec_limit_raises_capability_degraded(system):
     ).fetchone()[0] == 0
     # Its at-risk lots span from the recipe change to now.
     assert inc["lots_at_risk"] != "[]"
+
+
+# ----- faults 5 and 6 ------------------------------
+
+def _since(system, sid, start_tick):
+    return [i for i in system.incidents(sid) if i["opened_at"] >= system.clock.iso_at(start_tick)]
+
+
+def test_fault_5_recipe_change_relearns_with_no_incident(system):
+    sid, tool = "S-05-TEMP", "T-05"
+    old = dict(system.sensor_state(sid))
+    start = system.clock.tick + 1
+    fid = system.sim.inject(RecipeChangeNoFault(sid, start_tick=start))
+
+    records = system.step_with()  # the change tick: readings, then the recipe change, then the tick
+    kinds = [r["event_type"] for r in records]
+    assert kinds[-2:] == ["recipe_change", "tick"] and set(kinds[:-2]) == {"reading"}
+    change_id = records[-2]["payload"]["change_id"]
+    row = system.conn.execute("SELECT * FROM fault_injections WHERE fault_id = ?", (fid,)).fetchone()
+    assert row["planted_cause_id"] == change_id and row["expected_outcome"] == "relearn;no_incident;capability_ok"
+    assert {r["baseline_status"] for r in system.conn.execute(
+        "SELECT ss.baseline_status FROM sensor_state ss JOIN sensors s USING (sensor_id) WHERE s.tool_id = ?", (tool,))} == {"relearning"}
+
+    system.run(system.config.baseline_window_ticks)
+    st = system.sensor_state(sid)
+    assert st["baseline_status"] == "active"
+    assert st["baseline_activated_at"] == system.clock.iso_at(start + system.config.baseline_window_ticks)
+    sd = system.world.sensor(sid).healthy_stddev
+    assert abs(st["control_mean"] - (old["control_mean"] + sd)) < 0.5 * sd  # learned the new operating point
+    # No incident on the tool during relearning, and capability is fine.
+    for s in [x.sensor_id for x in system.world.sensors if x.tool_id == tool]:
+        assert _since(system, s, start) == [], s
+
+    # Without relearning, the old limits would have fired: a run of run_length above the old mean.
+    vals = [r[0] for r in system.conn.execute(
+        "SELECT value FROM readings WHERE sensor_id = ? AND ts > ? ORDER BY ts", (sid, system.clock.iso_at(start)))]
+    run, longest = 0, 0
+    for v in vals:
+        run = run + 1 if v > old["control_mean"] else 0
+        longest = max(longest, run)
+    assert longest >= system.config.run_length
+
+
+def test_fault_6_out_of_spec_reading_during_relearning_raises_beyond_spec(system):
+    sid = "S-05-TEMP"
+    start = system.clock.tick + 1
+    fault = RecipeChangeOutOfSpec(sid, start_tick=start)
+    fid = system.sim.inject(fault)
+    excursion = start + fault.excursion_offset_ticks
+    system.run_until(excursion - 1)
+    assert system.sensor_state(sid)["baseline_status"] == "relearning"
+    assert _since(system, sid, start) == []
+    system.run(1)
+    assert system.sensor_state(sid)["baseline_status"] == "relearning"
+    [inc] = _since(system, sid, start)
+    assert (inc["rule_fired"], inc["severity"]) == ("beyond_spec", "high")
+    assert inc["opened_at"] == system.clock.iso_at(excursion)
+    assert system.conn.execute("SELECT COUNT(*) FROM notifications WHERE incident_id = ?", (inc["incident_id"],)).fetchone()[0] == 1
+    assert system.conn.execute("SELECT expected_outcome FROM fault_injections WHERE fault_id = ?", (fid,)).fetchone()[0] == "incident:beyond_spec"

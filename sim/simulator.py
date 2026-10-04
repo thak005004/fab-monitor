@@ -20,7 +20,7 @@ from collections.abc import Iterable
 from db import repo
 from db.connection import transaction
 from sim.clock import Clock
-from sim.faults import DriftWithDecoys, Fault, GradualDrift, NoisyHealthy
+from sim.faults import DriftWithDecoys, Fault, GradualDrift, NoisyHealthy, RecipeChangeNoFault
 from sim.seed import World
 
 # Must exceed config.baseline_window_ticks (120) so every baseline activates
@@ -47,8 +47,11 @@ class Simulator:
         self.warmup_ticks = warmup_ticks
         self.faults: list[tuple[str, Fault]] = []  # (fault_id, fault)
         self._scheduled_maintenance: dict[int, list[dict]] = {}
+        self._scheduled_recipes: dict[int, list[dict]] = {}
         self._reading_seq = 0
         self._maint_seq = 0
+        self._recipe_seq = 0
+        self._recipe_letters = {t.tool_id: "A" for t in world.tools}  # initial recipes are R-<nn>-A
         self._fault_seq = 0
         # One noise stream per sensor, seeded from (seed, sensor_id). Noise is
         # drawn every tick even when a sensor drops out, so injecting a fault
@@ -82,10 +85,12 @@ class Simulator:
         if isinstance(fault, DriftWithDecoys):
             entries += [(fault.start_tick + d.offset_ticks, d.tool_id or profile.tool_id) for d in fault.decoys]
         for tick, tool_id in entries:
-            self._check_maintenance_slot(tick, tool_id)
+            self._check_future_slot(tick, tool_id)
 
         planted_cause_id = None
         expected_outcome = fault.expected_outcome
+        if isinstance(fault, RecipeChangeNoFault):  # faults 5 and 6: the recipe change is what happened
+            planted_cause_id = self.schedule_recipe_change(fault.start_tick, profile.tool_id, fault.new_recipe_id)
         if isinstance(fault, GradualDrift) and fault.plants_maintenance:
             planted_cause_id = self._schedule_maintenance(
                 fault.start_tick - 1, profile.tool_id, fault.maintenance_description)
@@ -165,6 +170,17 @@ class Simulator:
                 }
             )
 
+        for change in self._scheduled_recipes.pop(tick, []):
+            records.append(
+                {
+                    "event_type": "recipe_change",
+                    "source": "recipe",
+                    "tool_id": change["tool_id"],
+                    "ts": ts,
+                    "payload": {"change_id": change["change_id"], "recipe_id": change["recipe_id"]},
+                }
+            )
+
         records.append({"event_type": "tick", "source": "clock", "tool_id": None, "ts": ts, "payload": {"tick": tick}})
         return records
 
@@ -182,7 +198,7 @@ class Simulator:
 
     def _schedule_maintenance(self, tick: int, tool_id: str, description: str) -> str:
         """Schedule a maintenance record for a future tick; returns its M- ID."""
-        self._check_maintenance_slot(tick, tool_id)
+        self._check_future_slot(tick, tool_id)
         log_id = self._next_maint_id()
         self._scheduled_maintenance.setdefault(tick, []).append(
             {"tool_id": tool_id, "payload": {"log_id": log_id, "description": description,
@@ -190,7 +206,26 @@ class Simulator:
         )
         return log_id
 
-    def _check_maintenance_slot(self, tick: int, tool_id: str) -> None:
+    def next_recipe_change_id(self) -> str:
+        """RC- IDs come from one counter, whether the change is simulated or
+        triggered from the dashboard, so they never collide."""
+        self._recipe_seq += 1
+        return f"RC-{self._recipe_seq:04d}"
+
+    def next_recipe_id(self, tool_id: str) -> str:
+        self._recipe_letters[tool_id] = chr(ord(self._recipe_letters[tool_id]) + 1)
+        return f"R-{tool_id[2:]}-{self._recipe_letters[tool_id]}"
+
+    def schedule_recipe_change(self, tick: int, tool_id: str, recipe_id: str | None = None) -> str:
+        """Schedule a RECIPE_CHANGE record for a future tick; returns its RC- ID."""
+        self._check_future_slot(tick, tool_id)
+        change_id = self.next_recipe_change_id()
+        self._scheduled_recipes.setdefault(tick, []).append(
+            {"tool_id": tool_id, "change_id": change_id, "recipe_id": recipe_id or self.next_recipe_id(tool_id)}
+        )
+        return change_id
+
+    def _check_future_slot(self, tick: int, tool_id: str) -> None:
         if tick <= self.clock.tick:
             raise ValueError(f"maintenance entry at tick {tick} would be in the past")
         if tool_id not in {t.tool_id for t in self.world.tools}:

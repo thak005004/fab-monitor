@@ -1,4 +1,4 @@
-"""Fault definitions (spec §15, faults 1-4 and 8-10).
+"""Fault definitions (spec §15, faults 1-6 and 8-10; fault 7 was cut).
 
 A fault never produces records itself. The simulator asks each active fault
 how it changes a sensor's signal at a tick:
@@ -133,6 +133,55 @@ class DriftWithInjection(GradualDrift):
 
 
 @dataclass(frozen=True)
+class RecipeChangeNoFault(_Fault):
+    """Fault 5. The simulator emits a RECIPE_CHANGE for the sensor's tool at
+    start_tick, and from the next tick this sensor runs at a new, healthy
+    operating point (mean_shift_sigma healthy stddevs away, still capable:
+    Cpk 4.5/3 = 1.5 at the default 1 sigma). Every sensor on the tool relearns.
+    With the old limits, a 1-sigma shift would trip sustained_run within ~9
+    ticks; relearning suppresses control rules until new limits are learned.
+    """
+
+    mean_shift_sigma: float = 1.0
+    new_recipe_id: str | None = None  # None: the simulator picks the next one for the tool
+
+    fault_type: ClassVar[str] = "recipe_change_no_fault"
+    expected_outcome: ClassVar[str] = "relearn;no_incident;capability_ok"
+
+    def active_at(self, tick: int) -> bool:
+        # Readings stamped at the change tick itself were made under the old recipe.
+        return tick > self.start_tick
+
+    def offset(self, tick: int, profile: SensorProfile) -> float:
+        return self.mean_shift_sigma * profile.healthy_stddev
+
+    @property
+    def changes_signal(self) -> bool:
+        return False  # a new healthy operating point, not a fault
+
+
+@dataclass(frozen=True)
+class RecipeChangeOutOfSpec(RecipeChangeNoFault):
+    """Fault 6. Fault 5, plus one reading excursion_offset_ticks after the change
+    that lands 3 healthy stddevs beyond the upper spec limit, while the sensor is
+    still relearning. beyond_spec must fire anyway."""
+
+    excursion_offset_ticks: int = 10
+
+    fault_type: ClassVar[str] = "recipe_change_out_of_spec"
+    expected_outcome: ClassVar[str] = "incident:beyond_spec"
+
+    def offset(self, tick: int, profile: SensorProfile) -> float:
+        if tick == self.start_tick + self.excursion_offset_ticks:
+            return profile.spec_upper - profile.healthy_mean + 3 * profile.healthy_stddev
+        return super().offset(tick, profile)
+
+    @property
+    def changes_signal(self) -> bool:
+        return True
+
+
+@dataclass(frozen=True)
 class StepShift(_Fault):
     """Fault 2. The mean jumps by shift_sigma healthy stddevs and stays there.
 
@@ -192,7 +241,8 @@ class NoisyHealthy(_Fault):
         return False
 
 
-Fault = Union[GradualDrift, DriftWithDecoys, DriftNoCause, DriftWithInjection, StepShift, Dropout, NoisyHealthy]
+Fault = Union[GradualDrift, DriftWithDecoys, DriftNoCause, DriftWithInjection, StepShift, Dropout, NoisyHealthy,
+              RecipeChangeNoFault, RecipeChangeOutOfSpec]
 
 
 def default_faults(world: World, warmup_ticks: int = 150) -> list[Fault]:
