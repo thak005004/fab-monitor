@@ -759,7 +759,10 @@ fab-monitor/
   config_loader.py
   orchestrator.py
   dashboard/app.py
-  eval.py
+  eval.py                   # writes eval_results/summary.md
+  eval_results/             # real_llm_run_<n>.json + summary.md
+  scripts/                  # run_sim, false_alarm_rate, rolling_vs_frozen, real_llm_run, demo_walkthrough
+  docs/                     # SPEC.md, DEMO_SCRIPT.md
   tests/
   NOTES.md                  # 3 sentences per module: what / why / what breaks without it
   README.md
@@ -856,7 +859,8 @@ fab-monitor/
 - Control rules and thresholds are standard SPC defaults, not tuned with real process engineers
 - The verifier can't catch a citation that is on the right tool and before onset but unrelated (fault 8's unrelated decoy); only the evaluation, comparing against `planted_cause_id`, catches it
 - "Before onset" uses the estimated onset, which can be later than the true fault start
-- The persistence notice never fires in simulation because nobody acknowledges; it is covered by its unit test
+- The persistence notice never fires in automated simulation because nobody acknowledges there. It is covered by its unit test, and it does fire in the dashboard demo once a person acknowledges
+- The system holds lots but doesn't model taking a tool out of production, so lots that start on a tool after a hold is confirmed are marked at risk but not held automatically
 - The model doesn't accept a temperature setting, so outputs can vary between runs; stored raw responses and verification are what make results auditable
 
 **What would change in production:** a real message broker, a time-series database, spec limits and thresholds set with process engineers, real notification channels, and running the diagnosis evaluation on historical incidents with known root causes.
