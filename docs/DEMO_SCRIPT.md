@@ -98,7 +98,7 @@ On INC-0008, press **Confirm hold** (acting as P-01).
 
 **You see:**
 - T-05: all sensors **active** again. On the S-05-TEMP chart, the grey band runs **exactly from tick 200 to tick 320**, the real length of that window.
-- No incident on T-05 during relearning. Later, three low watch-list items appear on T-05 (INC-0012 S-05-PRES at 337, INC-0014 S-05-RF at 339, INC-0015 S-05-RF at 367): ordinary false alarms against the new limits, and nobody was paged.
+- No incident on T-05 during relearning. Between ticks 320 and 404, three low watch-list items opened and expired on T-05 against the new limits: INC-0012 S-05-PRES (opened at 337), INC-0014 S-05-RF (339) and INC-0015 S-05-RF (367). Nobody was paged. By tick 404 they have expired, so the watch list no longer shows them and T-05's tile reads 0 low.
 - INC-0008's lots at risk keep growing as new lots start on T-01: LOT-0043, LOT-0049, LOT-0052 and LOT-0058 are marked at_risk. Only the two lots at risk when the hold was confirmed are held. A person would confirm the newer ones separately.
 
 ## With the real model

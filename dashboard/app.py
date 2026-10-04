@@ -167,9 +167,14 @@ with st.sidebar:
 # ----- header ---------------------------------------------------------------------
 
 st.error(HOSTED_BANNER if hosted_mode() else LOCAL_BANNER, icon="⚠️")
+# The flash message always gets its own slot, empty or not. If it came and went
+# as a top-level element, everything below it (the tabs) would shift position,
+# and the browser would rebuild the tabs and jump back to the first one after
+# every action button.
+flash_slot = st.container()
 if "flash" in st.session_state:
     kind, text = st.session_state.pop("flash")
-    getattr(st, kind)(text)
+    getattr(flash_slot, kind)(text)
 
 notified_active = repo.incidents_by_tier(conn, actionable=True, active_only=True)
 watch = repo.incidents_by_tier(conn, actionable=False, active_only=True)
@@ -214,14 +219,19 @@ with tab_chart:
     if df.empty:
         st.info("No readings in this range yet.")
     else:
-        x = alt.X("tick:Q", title="tick", scale=alt.Scale(domain=[first_tick, max(clock.tick, first_tick + 1)]))
+        # One x scale for every layer, starting at the first reading shown. (A
+        # quantitative scale includes 0 by default, which the bands and markers
+        # would otherwise pull in.)
+        first_shown = int(df["tick"].min())
+        xscale = alt.Scale(domain=[first_shown, max(clock.tick, first_shown + 1)], zero=False, nice=False)
+        x = alt.X("tick:Q", title="tick", scale=xscale)
         layers = []
-        windows = [w for w in relearning_windows(conn, sid, clock) if clock.tick_of(w[1]) >= first_tick]
+        windows = [w for w in relearning_windows(conn, sid, clock) if clock.tick_of(w[1]) >= first_shown]
         if windows:
-            wdf = pd.DataFrame([{"start": max(clock.tick_of(a), first_tick), "end": clock.tick_of(b),
+            wdf = pd.DataFrame([{"start": max(clock.tick_of(a), first_shown), "end": clock.tick_of(b),
                                  "label": "relearning (ongoing)" if ongoing else "relearning"} for a, b, ongoing in windows])
             layers.append(alt.Chart(wdf).mark_rect(opacity=0.15, color="#7f7f7f").encode(
-                x=alt.X("start:Q"), x2="end:Q", tooltip=["label", "start", "end"]))
+                x=alt.X("start:Q", scale=xscale), x2="end:Q", tooltip=["label", "start", "end"]))
         layers.append(alt.Chart(df).mark_line(point=alt.OverlayMarkDef(size=12)).encode(
             x=x, y=alt.Y("value:Q", title=f"{sensor['sensor_type']} ({sensor['unit']})", scale=alt.Scale(zero=False)),
             tooltip=["tick", "value", "reading"]))
@@ -235,12 +245,12 @@ with tab_chart:
             color=alt.Color("kind:N", scale=alt.Scale(domain=["spec limit", "control limit", "control mean"],
                                                       range=["#d1334d", "#4c78a8", "#9ecae9"]), title="Limits"),
             strokeDash=alt.condition(alt.datum.kind == "spec limit", alt.value([1, 0]), alt.value([6, 4]))))
-        incs = [i for i in repo.incidents_on_sensor(conn, sid) if clock.tick_of(i["opened_at"]) >= first_tick]
+        incs = [i for i in repo.incidents_on_sensor(conn, sid) if clock.tick_of(i["opened_at"]) >= first_shown]
         if incs:
             idf = pd.DataFrame([{"tick": clock.tick_of(i["opened_at"]), "incident": i["incident_id"],
                                  "rule": i["rule_fired"], "severity": i["severity"], "status": i["status"]} for i in incs])
             layers.append(alt.Chart(idf).mark_rule(strokeWidth=2).encode(
-                x="tick:Q", tooltip=["incident", "rule", "severity", "status", "tick"],
+                x=alt.X("tick:Q", scale=xscale), tooltip=["incident", "rule", "severity", "status", "tick"],
                 color=alt.Color("severity:N", title="Incident opened",
                                 scale=alt.Scale(domain=list(SEVERITY_COLORS), range=list(SEVERITY_COLORS.values())))))
         st.altair_chart(alt.layer(*layers).resolve_scale(color="independent").properties(height=380),

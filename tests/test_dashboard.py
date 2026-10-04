@@ -175,3 +175,29 @@ def test_hosted_mode_from_streamlit_secret(monkeypatch):
 def test_local_banner_is_unchanged(at):
     assert any(e.value.startswith("**Simulated data.** Every tool, sensor, person, lot and reading") for e in at.error)
     assert not any("scripted model responses" in e.value for e in at.error)
+
+
+def tabs_position(app) -> int:
+    """Where the tabs block sits among the page's top-level elements."""
+    return next(i for i, node in app.main.children.items()
+                if any(type(c).__name__ == "Tab" for c in getattr(node, "children", {}).values()))
+
+
+def test_action_buttons_keep_the_incidents_tab_and_the_selected_incident(at):
+    """After an action button the page shows a flash message. The tabs must stay in
+    the same place in the page, or the browser rebuilds them and jumps back to the
+    first tab, hiding the incident the person was working on."""
+    click(at, "+50", at.sidebar)
+    assert not at.success  # no flash message on this rerun
+    position = tabs_position(at)
+    at.selectbox(key="incident_detail").set_value("INC-0008").run()
+
+    click(at, "Acknowledge")
+    assert any("INC-0008: open → acknowledged" in m.value for m in at.success)  # flash shown...
+    assert tabs_position(at) == position  # ...without moving the tabs
+    assert at.selectbox(key="incident_detail").value == "INC-0008"
+
+    click(at, "Confirm hold")
+    assert any("acknowledged → hold_confirmed" in m.value for m in at.success)
+    assert tabs_position(at) == position
+    assert at.selectbox(key="incident_detail").value == "INC-0008"
