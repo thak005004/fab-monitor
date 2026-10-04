@@ -42,6 +42,8 @@ SENSOR = "S-01-TEMP"
 START = DEFAULT_WARMUP_TICKS + 25   # after warm-up, and late enough for fault 8's earliest decoy
 RUN_AFTER_START = 130               # long enough for the drift to leave spec (upgrade -> re-diagnosis)
 FALSE_ALARM_MAX_TICKS = 3000
+# Recorded in each run. Run 1 predates this field: its bundles had the onset window only.
+EVIDENCE_BUNDLE_VERSION = "onset window + latest-trigger window"
 
 
 class ScopedClient:
@@ -142,8 +144,13 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--client", choices=["anthropic", "fake"], default="anthropic")
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--out", default="eval_results/real_llm_run_1.json")
+    ap.add_argument("--out", default=None, help="default: the next free eval_results/real_llm_run_<n>.json")
     args = ap.parse_args()
+    if args.out is None:
+        n = 1
+        while Path(f"eval_results/real_llm_run_{n}.json").exists():
+            n += 1
+        args.out = f"eval_results/real_llm_run_{n}.json"
 
     config = load_config()
     if args.client == "anthropic":
@@ -170,7 +177,8 @@ def main() -> None:
         r["matched_expected"], r["verdict"] = judge(r)
 
     report = {"synthetic_data": True, "client": args.client, "model": client.name, "seed": args.seed,
-              "config_version": config.version, "prompt_version": "diagnosis_v1", "results": results}
+              "config_version": config.version, "prompt_version": "diagnosis_v1",
+              "evidence_bundle": EVIDENCE_BUNDLE_VERSION, "results": results}
     out.write_text(json.dumps(report, indent=2) + "\n")
     print(f"SYNTHETIC DATA. client={args.client} model={client.name} seed={args.seed} -> {out}")
     for r in results:
