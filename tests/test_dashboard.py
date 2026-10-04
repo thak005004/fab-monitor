@@ -40,8 +40,8 @@ def system(app):
 
 def test_loads_demo_with_banner_and_config_version(at):
     assert any("Simulated data" in e.value for e in at.error)
-    assert metric(at, "Tick") == "150"  # warm-up done
-    assert metric(at, "Active config") == system(at).config.version
+    assert metric(at, "Simulated minute") == "150"  # warm-up done
+    assert metric(at, "Settings version") == system(at).config.version
     faults = system(at).conn.execute("SELECT fault_type, sensor_id FROM fault_injections").fetchall()
     assert ("gradual_drift", "S-01-TEMP") in [tuple(r) for r in faults]
 
@@ -50,13 +50,13 @@ def test_advance_buttons(at):
     click(at, "+1", at.sidebar)
     click(at, "+10", at.sidebar)
     click(at, "+50", at.sidebar)
-    assert metric(at, "Tick") == "211"
+    assert metric(at, "Simulated minute") == "211"
 
 
 def test_malformed_event_is_quarantined(at):
-    click(at, "Send a malformed event", at.sidebar)
-    assert metric(at, "Dead-letter records") == "1"
-    assert any("quarantined" in w.value for w in at.warning)
+    click(at, "Send bad data", at.sidebar)
+    assert metric(at, "Rejected bad data") == "1"
+    assert any("Bad data rejected and set aside (dead letter)" in w.value for w in at.warning)
 
 
 def test_recipe_change_starts_relearning(at):
@@ -93,9 +93,8 @@ def test_drift_incident_detail_citations_and_acknowledge(at):
     assert inc is not None
     at.selectbox(key="incident_detail").set_value(inc["incident_id"]).run()
     planted = conn.execute("SELECT planted_cause_id FROM fault_injections WHERE fault_type = 'gradual_drift'").fetchone()[0]
-    citations = next(df.value for df in at.dataframe if "verified" in df.value.columns)
-    row = citations[citations["id"] == planted].iloc[0]
-    assert row["verified"] == "✅" and "heater" in row["text"].lower()
+    line = next(m.value for m in at.markdown if f"**{planted}**" in m.value)
+    assert "heater" in line.lower() and "✓ checked against the records (verified)" in line
 
     status = inc["status"]
     click(at, "Acknowledge")
@@ -120,10 +119,10 @@ def test_each_session_gets_its_own_database_and_never_shares_state(at):
     assert (a_dir / "dashboard.db").exists() and (b_dir / "dashboard.db").exists()
 
     click(at, "+10", at.sidebar)
-    click(at, "Send a malformed event", at.sidebar)
+    click(at, "Send bad data", at.sidebar)
     other.run()
-    assert metric(at, "Tick") == "160" and metric(at, "Dead-letter records") == "1"
-    assert metric(other, "Tick") == "150" and metric(other, "Dead-letter records") == "0"
+    assert metric(at, "Simulated minute") == "160" and metric(at, "Rejected bad data") == "1"
+    assert metric(other, "Simulated minute") == "150" and metric(other, "Rejected bad data") == "0"
     assert other.session_state.system.conn.execute("SELECT COUNT(*) FROM dead_letter").fetchone()[0] == 0
 
 
@@ -131,7 +130,7 @@ def test_reloading_the_demo_replaces_this_sessions_database(at):
     old_dir = Path(at.session_state.db_dir)
     click(at, "+10", at.sidebar)
     click(at, "Load demo scenario", at.sidebar)
-    assert metric(at, "Tick") == "150"
+    assert metric(at, "Simulated minute") == "150"
     assert not old_dir.exists()
     assert Path(at.session_state.db_dir).exists()
 
@@ -193,7 +192,8 @@ def test_action_buttons_keep_the_incidents_tab_and_the_selected_incident(at):
     at.selectbox(key="incident_detail").set_value("INC-0008").run()
 
     click(at, "Acknowledge")
-    assert any("INC-0008: open → acknowledged" in m.value for m in at.success)  # flash shown...
+    assert any("INC-0008: Waiting for response → Someone is on it (open → acknowledged)" in m.value
+               for m in at.success)  # flash shown...
     assert tabs_position(at) == position  # ...without moving the tabs
     assert at.selectbox(key="incident_detail").value == "INC-0008"
 

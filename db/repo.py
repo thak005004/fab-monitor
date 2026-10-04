@@ -618,3 +618,40 @@ def count_by_status(conn, table: str, column: str, value: str) -> int:
     if (table, column) not in {("incidents", "status"), ("lots", "status")}:
         raise ValueError((table, column))
     return conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} = ?", (value,)).fetchone()[0]
+
+
+# ===== Activity feed (read-only) =================================================
+
+def all_incidents(conn) -> list:
+    return conn.execute("SELECT * FROM incidents ORDER BY opened_at, incident_id").fetchall()
+
+
+def all_notifications(conn) -> list:
+    return conn.execute("SELECT * FROM notifications ORDER BY sent_at, notification_id").fetchall()
+
+
+def all_recipe_changes(conn) -> list:
+    return conn.execute("SELECT * FROM recipe_changes ORDER BY ts, change_id").fetchall()
+
+
+def all_dead_letters(conn) -> list:
+    return conn.execute("SELECT * FROM dead_letter ORDER BY id").fetchall()
+
+
+def relearning_activations(conn) -> list:
+    """One row per tool and activation time: when a tool's sensors finished relearning."""
+    return conn.execute(
+        "SELECT s.tool_id, b.activated_at, MIN(b.window_start) AS window_start FROM baseline_windows b"
+        " JOIN sensors s USING (sensor_id) WHERE b.kind = 'relearning' GROUP BY s.tool_id, b.activated_at"
+        " ORDER BY b.activated_at, s.tool_id"
+    ).fetchall()
+
+
+def events_of_type(conn, event_type: str) -> list:
+    return conn.execute(
+        "SELECT * FROM events WHERE event_type = ? ORDER BY ts, event_id", (event_type,)
+    ).fetchall()
+
+
+def reading_at(conn, sensor_id: str, ts: str):
+    return conn.execute("SELECT * FROM readings WHERE sensor_id = ? AND ts = ?", (sensor_id, ts)).fetchone()

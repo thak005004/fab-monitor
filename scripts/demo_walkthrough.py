@@ -93,12 +93,12 @@ def run_walkthrough() -> dict:
         drift_fault = conn.execute("SELECT * FROM fault_injections WHERE fault_type = 'gradual_drift'").fetchone()
         planted = conn.execute("SELECT * FROM maintenance_log WHERE log_id = ?", (drift_fault["planted_cause_id"],)).fetchone()
         facts["load"] = {
-            "tick": int(_metric(at, "Tick")), "config": _metric(at, "Active config"),
+            "tick": int(_metric(at, "Simulated minute")), "config": _metric(at, "Settings version"),
             "baselines": sorted({r[0] for r in conn.execute("SELECT baseline_status FROM sensor_state")}),
             "drift_start_tick": clock.tick_of(drift_fault["start_ts"]),
             "planted_id": planted["log_id"] if planted else drift_fault["planted_cause_id"],
             "planted_tick": clock.tick_of(drift_fault["start_ts"]) - 1,
-            "dead_letters": int(_metric(at, "Dead-letter records")),
+            "dead_letters": int(_metric(at, "Rejected bad data")),
         }
 
         # Step 2: +50 -> the drift is caught and a person is notified.
@@ -131,9 +131,9 @@ def run_walkthrough() -> dict:
         }
 
         # Step 5: a malformed event.
-        _click(at, "Send a malformed event", sidebar=True)
+        _click(at, "Send bad data", sidebar=True)
         dl = conn.execute("SELECT * FROM dead_letter ORDER BY id DESC LIMIT 1").fetchone()
-        facts["malformed"] = {"dead_letters": int(_metric(at, "Dead-letter records")), "id": dl["id"],
+        facts["malformed"] = {"dead_letters": int(_metric(at, "Rejected bad data")), "id": dl["id"],
                               "reason": dl["error_reason"]}
 
         # Step 6: Kill LLM, then +50: the alert path without the model.
@@ -152,7 +152,7 @@ def run_walkthrough() -> dict:
         _click(at, key=f"confirm_hold_{inc['incident_id']}")
         held = json.loads(_drift_incident(conn)["lots_at_risk"])
         facts["confirm_hold"] = {
-            "status": _drift_incident(conn)["status"], "lots_held": int(_metric(at, "Lots held")),
+            "status": _drift_incident(conn)["status"], "lots_held": int(_metric(at, "Product batches on hold")),
             "held": sorted(r[0] for r in conn.execute(
                 f"SELECT lot_id FROM lots WHERE status = 'held' AND lot_id IN ({','.join('?' * len(held))})", held)),
         }

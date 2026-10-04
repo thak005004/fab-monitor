@@ -32,8 +32,17 @@ from sim.faults import LIVE_FAULT_TYPES, demo_faults  # noqa: E402
 from sim.simulator import DEFAULT_WARMUP_TICKS  # noqa: E402
 from state.baseline import relearning_windows  # noqa: E402
 
+from dashboard import explain  # noqa: E402
+from dashboard.explain import Names  # noqa: E402
+
 SEVERITY_COLORS = {"low": "#c9a227", "medium": "#e07b39", "high": "#d1334d"}
 ACTIONS = {"acknowledge": "Acknowledge", "confirm_hold": "Confirm hold", "dismiss": "Dismiss", "resolve": "Resolve"}
+ACTION_HELP = {
+    "acknowledge": "Tell the system you're handling this; it stops escalating to other people.",
+    "confirm_hold": "Put the product batches at risk on hold so they aren't shipped until checked.",
+    "dismiss": "Close this as not a real problem; a false alarm also pauses similar alerts on this sensor briefly.",
+    "resolve": "Close this after the problem has been fixed.",
+}
 
 st.set_page_config(page_title="Fab Tool Monitor (simulated)", layout="wide")
 
@@ -63,12 +72,12 @@ def make_llm():
     Local: Claude if a key is available (or FAB_MONITOR_LLM=anthropic), else the
     scripted fake. FAB_MONITOR_LLM=fake forces the fake (used by the tests)."""
     if hosted_mode():
-        return FakeClient("valid"), "Scripted fake client (hosted demo)"
+        return FakeClient("valid"), "scripted responses (hosted demo)"
     choice = os.environ.get("FAB_MONITOR_LLM") or ("anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "fake")
     if choice == "anthropic":
         model = load_config().diagnosis_model
         return AnthropicClient(model), f"Claude API ({model})"
-    return FakeClient("valid"), "Scripted fake client (no API key set)"
+    return FakeClient("valid"), "scripted responses (no API key set)"
 
 
 def load_demo() -> None:
@@ -86,9 +95,9 @@ def load_demo() -> None:
         db_path, seed=42, llm=llm, faults_after_warmup=demo_faults(DEFAULT_WARMUP_TICKS), check_same_thread=False,
     )
     st.session_state.llm, st.session_state.llm_label = llm, label
-    st.session_state.flash = ("info", "Demo loaded: drift on S-01-TEMP starts 30 ticks after warm-up, right after a "
-                                      "planted maintenance entry. S-04-TEMP is noisy but healthy. T-03 and T-05 are "
-                                      "fault-free: try a recipe change there.")
+    st.session_state.flash = ("info", "Demo loaded. At minute 180, T-01's temperature (S-01-TEMP) starts drifting, "
+                                      "right after a maintenance entry. S-04-TEMP is noisy but healthy. T-03 and T-05 "
+                                      "have no problems: try a recipe change there.")
 
 
 def flash(kind: str, text: str) -> None:
@@ -99,74 +108,92 @@ if "system" not in st.session_state:
     load_demo()
 system: System = st.session_state.system
 conn, clock, config = system.conn, system.clock, system.config
+names = Names(conn)
 
 
 # ----- sidebar: controls ---------------------------------------------------------
 
 with st.sidebar:
     st.header("Simulation")
-    if st.button("Load demo scenario", width="stretch"):
+    if st.button("Load demo scenario", width="stretch",
+                 help="Start over with the demo: a slow temperature drift on T-01 that begins at minute 180."):
         load_demo()
         st.rerun()
 
-    st.caption("Advance ticks")
+    st.caption("Advance time (simulated minutes)")
     cols = st.columns(3)
     for col, n in zip(cols, (1, 10, 50)):
-        if col.button(f"+{n}", width="stretch"):
+        if col.button(f"+{n}", width="stretch",
+                      help=f"Run the factory forward {n} simulated minute{'s' if n > 1 else ''}; every sensor reports once a minute."):
             system.advance(n)
             st.rerun()
 
     # Keyed with a constant default so the widget keeps its own state across reruns.
-    killed = st.toggle("Kill LLM", value=False, key="kill_llm",
-                       help="Swap in FailingClient: diagnoses become 'unavailable', alerts still go out.")
+    killed = st.toggle("Simulate AI outage", value=False, key="kill_llm",
+                       help="Turn the AI off (Kill LLM) to show that alerts still go out without it.")
     system.orchestrator.llm = FailingClient() if killed else st.session_state.llm
-    st.caption(f"LLM: {'killed (FailingClient)' if killed else st.session_state.llm_label}")
+    st.caption(f"AI: {'off: simulated outage (FailingClient)' if killed else st.session_state.llm_label}")
 
-    st.subheader("Inject fault")
+    st.subheader("Inject a fault")
     tools = [t.tool_id for t in system.world.tools]
-    f_tool = st.selectbox("Tool", tools, key="f_tool")
-    f_sensor = st.selectbox("Sensor", [s.sensor_id for s in system.world.sensors if s.tool_id == f_tool], key="f_sensor")
-    f_type = st.selectbox("Fault type", LIVE_FAULT_TYPES, key="f_type")
-    if st.button("Inject", width="stretch"):
+    f_tool = st.selectbox("Tool", tools, key="f_tool", format_func=names.tool,
+                          help="The machine to cause a problem on.")
+    f_sensor = st.selectbox("Sensor", [s.sensor_id for s in system.world.sensors if s.tool_id == f_tool], key="f_sensor",
+                            format_func=lambda sid: f"{names.sensor_type(sid)} ({sid})",
+                            help="Which of the machine's sensors gets the problem.")
+    f_type = st.selectbox("Fault type", LIVE_FAULT_TYPES, key="f_type",
+                          format_func=lambda f: f"{explain.FAULT_TYPES.get(f, f)} ({f})",
+                          help="The kind of problem to simulate; it starts within a minute or two.")
+    if st.button("Inject", width="stretch", help="Start this simulated problem so you can watch the system catch it."):
         try:
             fid = system.inject(f_type, f_sensor)
-            flash("success", f"Injected {fid}: {f_type} on {f_sensor} (recorded in fault_injections).")
+            flash("success", f"Injected {fid}: {explain.FAULT_TYPES.get(f_type, f_type)} ({f_type}) on {names.sensor(f_sensor)}.")
         except ValueError as e:
             flash("error", f"Could not inject: {e}")
         st.rerun()
 
     st.subheader("Recipe change")
-    r_tool = st.selectbox("Tool", tools, index=tools.index("T-05") if "T-05" in tools else 0, key="r_tool")
-    r_recipe = st.text_input("New recipe ID", value=f"R-{r_tool[2:]}-B", key="r_recipe")
-    if st.button("Change recipe", width="stretch"):
+    r_tool = st.selectbox("Tool", tools, index=tools.index("T-05") if "T-05" in tools else 0, key="r_tool",
+                          format_func=names.tool, help="The machine that switches to a new process recipe.")
+    r_recipe = st.text_input("New recipe ID", value=f"R-{r_tool[2:]}-B", key="r_recipe",
+                             help="Name of the new recipe (the process settings the machine runs).")
+    if st.button("Change recipe", width="stretch",
+                 help="A new recipe changes what 'normal' looks like, so the machine's sensors re-learn it."):
         ok = system.recipe_change(r_tool, r_recipe)
         flash("success" if ok else "error",
-              f"{r_tool} switched to {r_recipe}: its sensors are relearning." if ok else "Recipe change was rejected.")
+              f"{names.tool(r_tool)} switched to recipe {r_recipe}: its sensors are learning the new normal (relearning)."
+              if ok else "Recipe change was rejected.")
         st.rerun()
 
     st.subheader("People")
     people = repo.people(conn)
     p_id = st.selectbox("Person", [p["person_id"] for p in people],
-                        format_func=lambda pid: next(f"{pid} {p['name']} ({'available' if p['available'] else 'unavailable'})"
-                                                     for p in people if p["person_id"] == pid), key="p_id")
+                        format_func=lambda pid: next(f"{p['name']} ({pid}): {'available' if p['available'] else 'unavailable'}"
+                                                     for p in people if p["person_id"] == pid), key="p_id",
+                        help="Engineers who can be alerted; P-ONCALL is the on-call backup.")
     available = next(p["available"] for p in people if p["person_id"] == p_id)
-    if st.button("Mark unavailable" if available else "Mark available", width="stretch"):
+    if st.button("Mark unavailable" if available else "Mark available", width="stretch",
+                 help="Someone calls out: their open, unanswered alerts move to the next qualified person."):
         system.set_availability(p_id, not available)
-        flash("success", f"{p_id} marked {'unavailable: open incidents they own are reassigned' if available else 'available'}.")
+        flash("success", f"{names.person(p_id)} marked "
+                         f"{'unavailable: their open alerts are reassigned' if available else 'available'}.")
         st.rerun()
 
     st.subheader("Bad data")
-    if st.button("Send a malformed event", width="stretch"):
+    if st.button("Send bad data", width="stretch",
+                 help="Send a garbled sensor message; it should be rejected and set aside without stopping anything."):
         accepted = system.send_malformed()
         flash("warning" if not accepted else "error",
-              "Malformed reading quarantined in dead_letter; the pipeline kept going." if not accepted
-              else "Unexpected: the malformed event was accepted.")
+              "Bad data rejected and set aside (dead letter); monitoring kept going." if not accepted
+              else "Unexpected: the bad data was accepted.")
         st.rerun()
 
 
 # ----- header ---------------------------------------------------------------------
 
 st.error(HOSTED_BANNER if hosted_mode() else LOCAL_BANNER, icon="⚠️")
+with st.expander("What you're looking at", expanded=True):
+    st.markdown(explain.INTRO)
 # The flash message always gets its own slot, empty or not. If it came and went
 # as a top-level element, everything below it (the tabs) would shift position,
 # and the browser would rebuild the tabs and jump back to the first one after
@@ -178,38 +205,67 @@ if "flash" in st.session_state:
 
 notified_active = repo.incidents_by_tier(conn, actionable=True, active_only=True)
 watch = repo.incidents_by_tier(conn, actionable=False, active_only=True)
-m = st.columns([1, 1.6, 1.3, 1.1, 0.9, 1.2])
-m[0].metric("Tick", clock.tick, help=clock.now_iso())
-m[1].metric("Active config", config.version)
-m[2].metric("Active notified incidents", len(notified_active))
-m[3].metric("Watch list (low)", len(watch))
-m[4].metric("Lots held", repo.count_by_status(conn, "lots", "status", "held"))
-m[5].metric("Dead-letter records", repo.count_rows(conn, "dead_letter"))
+m = st.columns(3) + st.columns(3)  # two rows of three, so labels and values fit on a laptop screen
+m[0].metric("Simulated minute", clock.tick,
+            help=f"Simulated time (tick); one minute per step. Clock reads {clock.now_iso()}.")
+m[1].metric("Settings version", config.version,
+            help="The version of the alerting settings in use (config version); every alert records it.")
+m[2].metric("Open alerts", len(notified_active),
+            help="Problems at Alert or Urgent level that a person has been told about and that aren't closed yet.")
+m[3].metric("Watch list", len(watch),
+            help="Unusual but not alarming yet (low severity): shown here, but no one is paged.")
+m[4].metric("Product batches on hold", repo.count_by_status(conn, "lots", "status", "held"),
+            help="Batches (lots) a person put on hold so they aren't shipped until checked.")
+m[5].metric("Rejected bad data", repo.count_rows(conn, "dead_letter"),
+            help="Garbled messages set aside (dead letter) instead of being trusted; monitoring keeps going.")
 
 # Tool grid
-st.subheader("Tools")
+st.subheader("Machines (tools)", help="Each card is one machine and its three sensors. Color shows its most serious open problem.")
 grid = st.columns(len(system.world.tools))
 states = {r["sensor_id"]: r for r in repo.all_sensor_states(conn)}
 for col, t in zip(grid, repo.tool_overview(conn)):
     with col.container(border=True):
         high, med, low = t["high"] or 0, t["medium"] or 0, t["low"] or 0
         badge = "🔴" if high else "🟠" if med else "🟡" if low else "🟢"
-        st.markdown(f"**{badge} {t['tool_id']}** · {t['kind']}")
-        st.caption(f"Status: {t['status']} · Recipe: {t['current_recipe_id']}")
-        st.caption(f"Active incidents: {high} high · {med} medium · {low} low")
+        st.markdown(f"**{badge} {t['name']}**")
+        st.caption(f"{t['tool_id']} · recipe {t['current_recipe_id']}")
+        counts = [f"{n} {label}" for n, label in ((high, "urgent"), (med, "alert"), (low, "watch")) if n]
+        st.caption("Open: " + ", ".join(counts) if counts else "No open problems")
         sensors = [s for s in system.world.sensors if s.tool_id == t["tool_id"]]
-        st.caption(" · ".join(f"{s.sensor_id[5:]}: {states[s.sensor_id]['baseline_status']}" for s in sensors))
+        by_state: dict[str, list[str]] = {}
+        for s in sensors:
+            by_state.setdefault(states[s.sensor_id]["baseline_status"], []).append(
+                explain.SENSOR_TYPES.get(s.sensor_type, s.sensor_type))
+        st.caption("All sensors monitoring" if set(by_state) == {"active"} else
+                   " · ".join(f"{explain.BASELINE_SHORT[k].capitalize()}: {', '.join(v)}" for k, v in by_state.items()),
+                   help="'Monitoring' = normal range learned. 'Learning new normal' = re-learning after a recipe "
+                        "change (relearning), when only the allowed-range check runs.")
 
-tab_chart, tab_inc, tab_inbox, tab_dl = st.tabs(["Sensor chart", "Incidents", "Inboxes", "Dead letter"])
+tab_feed, tab_chart, tab_inc, tab_inbox, tab_dl = st.tabs(
+    ["Activity", "Sensor chart", "Incidents", "Inboxes", "Rejected bad data"])
+
+
+# ----- activity feed ---------------------------------------------------------------
+
+with tab_feed:
+    st.caption("What happened, newest first, in plain English. Routine readings are left out.")
+    feed = explain.activity_feed(conn, clock, config)
+    if not feed:
+        st.caption("Nothing notable yet. Advance the simulation.")
+    with st.container(height=420, border=False):
+        for minute, text in feed:
+            st.markdown(f"**Minute {minute}:** {text}")
 
 
 # ----- sensor chart ------------------------------------------------------------------
 
 with tab_chart:
     sensor_ids = [s.sensor_id for s in system.world.sensors]
-    c1, c2 = st.columns([1, 2])
-    sid = c1.selectbox("Sensor", sensor_ids, index=sensor_ids.index("S-01-TEMP"), key="chart_sensor")
-    span = c2.slider("Ticks shown", 50, 1000, 300, step=50, key="chart_span")
+    c1, c2 = st.columns([3, 2])
+    sid = c1.selectbox("Sensor", sensor_ids, index=sensor_ids.index("S-01-TEMP"), key="chart_sensor",
+                       format_func=names.sensor, help="Which sensor's readings to plot.")
+    span = c2.slider("Minutes shown", 50, 1000, 300, step=50, key="chart_span",
+                     help="How far back the chart goes, in simulated minutes (ticks).")
     sensor = repo.get_sensor(conn, sid)
     state = states[sid]
     first_tick = max(0, clock.tick - span)
@@ -224,136 +280,187 @@ with tab_chart:
         # would otherwise pull in.)
         first_shown = int(df["tick"].min())
         xscale = alt.Scale(domain=[first_shown, max(clock.tick, first_shown + 1)], zero=False, nice=False)
-        x = alt.X("tick:Q", title="tick", scale=xscale)
+        x = alt.X("tick:Q", title="Simulated minutes", scale=xscale)
         layers = []
         windows = [w for w in relearning_windows(conn, sid, clock) if clock.tick_of(w[1]) >= first_shown]
         if windows:
             wdf = pd.DataFrame([{"start": max(clock.tick_of(a), first_shown), "end": clock.tick_of(b),
-                                 "label": "relearning (ongoing)" if ongoing else "relearning"} for a, b, ongoing in windows])
+                                 "label": "learning the new normal after a recipe change" + (" (ongoing)" if ongoing else "")}
+                                for a, b, ongoing in windows])
             layers.append(alt.Chart(wdf).mark_rect(opacity=0.15, color="#7f7f7f").encode(
                 x=alt.X("start:Q", scale=xscale), x2="end:Q", tooltip=["label", "start", "end"]))
+        unit = sensor["unit"]
+        stype = explain.SENSOR_TYPES.get(sensor["sensor_type"], sensor["sensor_type"])
         layers.append(alt.Chart(df).mark_line(point=alt.OverlayMarkDef(size=12)).encode(
-            x=x, y=alt.Y("value:Q", title=f"{sensor['sensor_type']} ({sensor['unit']})", scale=alt.Scale(zero=False)),
-            tooltip=["tick", "value", "reading"]))
-        limits = [{"y": sensor["spec_lower"], "kind": "spec limit"}, {"y": sensor["spec_upper"], "kind": "spec limit"}]
+            x=x, y=alt.Y("value:Q", title=f"{stype} ({unit})", scale=alt.Scale(zero=False)),
+            tooltip=[alt.Tooltip("tick", title="minute"), alt.Tooltip("value", title=f"reading ({unit})"),
+                     alt.Tooltip("reading", title="reading ID")]))
+        allowed, normal, avg = "Allowed range (fixed spec limits)", "Normal range (learned control limits)", "Normal average (control mean)"
+        limits = [{"y": sensor["spec_lower"], "kind": allowed, "tag": "allowed range"},
+                  {"y": sensor["spec_upper"], "kind": allowed, "tag": "allowed range"}]
         if state["control_mean"] is not None:
             k, mu, sd = config.sigma_threshold, state["control_mean"], state["control_stddev"]
-            limits += [{"y": mu - k * sd, "kind": "control limit"}, {"y": mu + k * sd, "kind": "control limit"},
-                       {"y": mu, "kind": "control mean"}]
-        layers.append(alt.Chart(pd.DataFrame(limits)).mark_rule().encode(
-            y="y:Q", tooltip=["kind", "y"],
-            color=alt.Color("kind:N", scale=alt.Scale(domain=["spec limit", "control limit", "control mean"],
-                                                      range=["#d1334d", "#4c78a8", "#9ecae9"]), title="Limits"),
-            strokeDash=alt.condition(alt.datum.kind == "spec limit", alt.value([1, 0]), alt.value([6, 4]))))
+            limits += [{"y": mu - k * sd, "kind": normal, "tag": "normal range"},
+                       {"y": mu + k * sd, "kind": normal, "tag": "normal range"},
+                       {"y": mu, "kind": avg, "tag": ""}]
+        ldf = pd.DataFrame(limits)
+        layers.append(alt.Chart(ldf).mark_rule().encode(
+            y="y:Q", tooltip=[alt.Tooltip("kind", title="line"), alt.Tooltip("y", title=unit)],
+            color=alt.Color("kind:N", scale=alt.Scale(domain=[allowed, normal, avg], range=["#d1334d", "#4c78a8", "#9ecae9"]),
+                            title="Lines", legend=alt.Legend(labelLimit=260)),
+            strokeDash=alt.condition(alt.datum.kind == allowed, alt.value([1, 0]), alt.value([6, 4]))))
+        # Label the lines on the chart itself, just inside the left edge.
+        layers.append(alt.Chart(ldf[ldf["tag"] != ""]).mark_text(align="left", dx=4, dy=-6, fontSize=11).encode(
+            x=alt.value(0), y="y:Q", text="tag:N",
+            color=alt.Color("kind:N", scale=alt.Scale(domain=[allowed, normal, avg], range=["#d1334d", "#4c78a8", "#9ecae9"]),
+                            legend=None)))
         incs = [i for i in repo.incidents_on_sensor(conn, sid) if clock.tick_of(i["opened_at"]) >= first_shown]
         if incs:
             idf = pd.DataFrame([{"tick": clock.tick_of(i["opened_at"]), "incident": i["incident_id"],
-                                 "rule": i["rule_fired"], "severity": i["severity"], "status": i["status"]} for i in incs])
+                                 "problem": explain.rule(i["rule_fired"], config),
+                                 "level": explain.SEVERITY_SHORT[i["severity"]],
+                                 "status": explain.status(i["status"])} for i in incs])
+            levels = [explain.SEVERITY_SHORT[s] for s in SEVERITY_COLORS]
             layers.append(alt.Chart(idf).mark_rule(strokeWidth=2).encode(
-                x=alt.X("tick:Q", scale=xscale), tooltip=["incident", "rule", "severity", "status", "tick"],
-                color=alt.Color("severity:N", title="Incident opened",
-                                scale=alt.Scale(domain=list(SEVERITY_COLORS), range=list(SEVERITY_COLORS.values())))))
+                x=alt.X("tick:Q", scale=xscale),
+                tooltip=["incident", "problem", "level", "status", alt.Tooltip("tick", title="detected at minute")],
+                color=alt.Color("level:N", title="Problem detected",
+                                scale=alt.Scale(domain=levels, range=list(SEVERITY_COLORS.values())))))
         st.altair_chart(alt.layer(*layers).resolve_scale(color="independent").properties(height=380),
                         width="stretch")
-        st.caption(f"Baseline: {state['baseline_status']}. Grey bands are relearning windows after a recipe change; "
-                   "vertical lines mark when an incident opened (hover for details).")
+        st.caption(f"Sensor status: {explain.BASELINE.get(state['baseline_status'], state['baseline_status'])} "
+                   f"({state['baseline_status']}). Grey bands: learning the new normal after a recipe change. "
+                   "Vertical lines: when a problem was detected (hover for details).")
 
 
 # ----- incidents ---------------------------------------------------------------------
 
 def incident_table(rows) -> pd.DataFrame:
     return pd.DataFrame([{
-        "incident": r["incident_id"], "sensor": r["sensor_id"], "rule": r["rule_fired"], "severity": r["severity"],
-        "status": r["status"], "onset tick": clock.tick_of(r["onset_ts"]), "opened tick": clock.tick_of(r["opened_at"]),
-        "owner": r["owner_id"] or "-", "hold rec.": "YES" if r["recommend_hold"] else "",
-        "lots at risk": len(json.loads(r["lots_at_risk"] or "[]")),
+        "Incident": r["incident_id"], "Where": names.where(r["sensor_id"]),
+        "What happened": explain.rule_short(r["rule_fired"]), "Level": explain.SEVERITY_SHORT[r["severity"]],
+        "Status": explain.STATUS_SHORT.get(r["status"], r["status"]),
+        "Minute": clock.tick_of(r["opened_at"]),
+        "Batches at risk": f"{len(json.loads(r['lots_at_risk'] or '[]'))}"
+                           + (" · hold recommended" if r["recommend_hold"] else ""),
     } for r in rows])
+
+
+# Fixed widths (pixels) so every column fits a laptop-width page without cutting text off.
+INCIDENT_COLUMNS = {
+    "Incident": st.column_config.TextColumn("Incident", width=82),
+    "Where": st.column_config.TextColumn("Where", width=128),
+    "What happened": st.column_config.TextColumn("What happened", width=162),
+    "Level": st.column_config.TextColumn("Level", width=62),
+    "Status": st.column_config.TextColumn("Status", width=150),
+    "Minute": st.column_config.NumberColumn("Minute", width=62, help="Simulated minute the problem was detected (opened)."),
+    "Batches at risk": st.column_config.TextColumn(
+        "Batches at risk", width=166, help="Product batches (lots) on this machine since the problem started; "
+                                           "'hold recommended' when the problem is Urgent."),
+}
 
 
 with tab_inc:
     notified = repo.incidents_by_tier(conn, actionable=True, active_only=False)
-    left, right = st.columns([3, 2])
+    left = right = st.container()  # stacked at full width so no column is cut off
     with left:
-        st.markdown("**Notified incidents** (medium and high: diagnosed, triaged, sent to a person)")
+        st.markdown("**Alerts sent to people** (Alert and Urgent levels)",
+                    help="Problems serious enough that the AI looked into them and a qualified person was notified.")
         if notified:
-            st.dataframe(incident_table(notified), hide_index=True, width="stretch")
+            st.dataframe(incident_table(notified), hide_index=True, width="stretch", column_config=INCIDENT_COLUMNS)
         else:
             st.caption("None yet.")
     with right:
-        st.markdown("**Watch list** (active low-severity incidents: dashboard only, nobody is paged)")
+        st.markdown("**Watch list: unusual but not alarming yet**",
+                    help="Low-severity incidents: shown here only, no one is paged. They're promoted if things get worse.")
         if watch:
-            st.dataframe(incident_table(watch)[["incident", "sensor", "rule", "status", "opened tick"]],
-                         hide_index=True, width="stretch")
+            st.dataframe(incident_table(watch)[["Incident", "Where", "What happened", "Minute"]],
+                         hide_index=True, width="stretch", column_config=INCIDENT_COLUMNS)
         else:
             st.caption("Empty.")
 
     choices = [r["incident_id"] for r in notified] + [r["incident_id"] for r in watch]
     if choices:
         st.divider()
-        iid = st.selectbox("Incident detail", choices, key="incident_detail")
+        iid = st.selectbox("Incident detail", choices, key="incident_detail",
+                           format_func=lambda i: f"{i}", help="Pick an incident to see what happened and act on it.")
         inc = repo.get_incident(conn, iid)
+        st.markdown(f"**{iid}** · {names.sensor(inc['sensor_id'])}")
         st.markdown(
-            f"**{iid}** · {inc['sensor_id']} on {inc['tool_id']} · rule **{inc['rule_fired']}** · "
-            f"severity **{inc['severity']}** · status **{inc['status']}** · onset tick {clock.tick_of(inc['onset_ts'])} · "
-            f"opened tick {clock.tick_of(inc['opened_at'])} · owner {inc['owner_id'] or '-'} · "
-            f"escalation level {inc['escalation_level']}")
+            f"**{explain.rule(inc['rule_fired'], config)}** · level **{explain.severity(inc['severity'])}** · "
+            f"status **{explain.status(inc['status'])}**")
+        st.caption(f"Started around minute {clock.tick_of(inc['onset_ts'])} (onset) · detected at minute "
+                   f"{clock.tick_of(inc['opened_at'])} · owner {names.person(inc['owner_id'])} · "
+                   f"escalation level {inc['escalation_level']}")
         if inc["recommend_hold"]:
-            st.warning("**Hold recommended** (high severity with lots at risk). A person confirms it below.")
+            st.warning("**Hold recommended:** urgent problem with product batches at risk. A person confirms it below.")
 
         lots = repo.lots_by_ids(conn, json.loads(inc["lots_at_risk"] or "[]"))
-        st.markdown("**Lots at risk:** " + (", ".join(f"{l['lot_id']} ({l['status']})" for l in lots) or "none"))
+        st.markdown("**Product batches (lots) at risk:** "
+                    + (", ".join(f"{l['lot_id']} ({'on hold' if l['status'] == 'held' else l['status'].replace('_', ' ')})"
+                                 for l in lots) or "none"),
+                    help="Every batch that was on this machine between when the problem started and now.")
 
         dxs = repo.diagnoses_for_incident(conn, iid)
         if not dxs:
-            st.caption("No diagnosis (low-severity watch-list incidents and dropouts are never diagnosed).")
+            st.caption("No AI diagnosis: watch-list items and sensors that stopped reporting aren't sent to the AI.")
         else:
             dx = dxs[-1]
             bundle = json.loads(dx["evidence_bundle"])
             items = bundle_items(bundle)
             status = dx["status"]
-            label = {"diagnosed": "✅ diagnosed (citations verified)", "abstained": "➖ abstained",
-                     "rejected": "❌ rejected by the verifier, not trusted", "unavailable": "⚠️ unavailable"}[status]
-            st.markdown(f"**Diagnosis {dx['diagnosis_id']}:** {label} · model {dx['model'] or '-'} · "
-                        f"confidence {dx['confidence'] or '-'}")
+            icon = {"diagnosed": "✅", "abstained": "➖", "rejected": "❌", "unavailable": "⚠️"}[status]
+            st.markdown(f"**AI diagnosis {dx['diagnosis_id']}:** {icon} {explain.DIAGNOSIS[status]} ({status})",
+                        help="The AI only suggests likely contributing factors; code checks every record it cites, "
+                             "and a person decides.")
+            model = {"fake": "scripted responses (fake)", "failing": "off: simulated outage (failing)"}.get(
+                dx["model"], dx["model"] or "-")
+            st.caption(f"AI model: {model} · confidence: {dx['confidence'] or '-'}")
             if dx["rejection_reason"]:
                 st.caption(f"Reason: {dx['rejection_reason']}")
             factors = json.loads(dx["likely_factors"] or "[]")
             if factors and status == "diagnosed":
                 st.markdown("**Likely contributing factors:**\n" + "\n".join(f"- {f}" for f in factors))
             elif factors:
-                with st.expander("Model output (failed verification, not trusted)"):
+                with st.expander("What the AI said (failed the evidence check, not trusted)"):
                     st.markdown("\n".join(f"- {f}" for f in factors))
             cited = json.loads(dx["cited_evidence"] or "[]")
             if cited:
-                st.markdown("**Citations**")
-                rows = []
+                st.markdown("**Evidence the AI cited**", help="Each record is checked: it must exist, belong to "
+                            "this machine, and come before the problem started.")
+                lines = []
                 for cid in cited:
                     item = items.get(cid, {})
                     problem = check_citation(cid, bundle, clock, config)
                     text = item.get("description") or (f"recipe {item['recipe_id']}" if "recipe_id" in item else
                                                        f"reading value {item['value']:.3f}" if "value" in item else "-")
-                    rows.append({"verified": "✅" if problem is None else "❌", "id": cid,
-                                 "tick": clock.tick_of(item["ts"]) if "ts" in item else "-",
-                                 "text": text, "check": problem or "in evidence, right tool, not after onset"})
-                st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+                    when = f"minute {clock.tick_of(item['ts'])}" if "ts" in item else "not in the evidence"
+                    check = ("✓ checked against the records (verified)" if problem is None
+                             else f"✗ failed the check: {problem}")
+                    lines.append(f"- **{cid}** · {when} · \u201c{text}\u201d · {check}")
+                st.markdown("\n".join(lines))
             if len(dxs) > 1:
-                st.caption(f"{len(dxs)} diagnoses for this incident; showing the latest.")
+                st.caption(f"{len(dxs)} AI diagnoses for this incident; showing the latest.")
 
-        st.markdown("**Actions**")
+        st.markdown("**Actions**", help="What a person does next. The system recommends; people decide.")
         people_ids = [p["person_id"] for p in repo.people(conn)]
         a1, a2 = st.columns([1, 3])
         actor = a1.selectbox("Acting as", people_ids,
                              index=people_ids.index(inc["owner_id"]) if inc["owner_id"] in people_ids else 0,
-                             key=f"actor_{iid}")
-        reason = a1.selectbox("Dismiss reason", ["false_alarm", "duplicate", "other"], key=f"reason_{iid}")
+                             key=f"actor_{iid}", format_func=names.person,
+                             help="Who is taking the action (normally the person who was alerted).")
+        reason = a1.selectbox("Dismiss reason", ["false_alarm", "duplicate", "other"], key=f"reason_{iid}",
+                              format_func=lambda r: explain.DISMISS_REASONS[r],
+                              help="Only used by Dismiss. 'False alarm' briefly pauses similar alerts on this sensor.")
         buttons = a2.columns(4)
         for col, (action, text) in zip(buttons, ACTIONS.items()):
-            if col.button(text, key=f"{action}_{iid}", width="stretch"):
+            if col.button(text, key=f"{action}_{iid}", width="stretch", help=ACTION_HELP[action]):
                 before = inc["status"]
                 after = system.alert_action(iid, action, actor, reason if action == "dismiss" else None)
                 flash("success" if after != before else "error",
-                      f"{iid}: {before} → {after}" if after != before
-                      else f"{text} is not allowed for an incident that is {before} (rejected and logged).")
+                      f"{iid}: {explain.STATUS[before]} → {explain.STATUS[after]} ({before} → {after})" if after != before
+                      else f"{text} isn't possible while {iid} is '{explain.STATUS[before]}' ({before}); "
+                           "the request was rejected and logged.")
                 st.rerun()
     else:
         st.caption("No incidents yet. Advance the simulation.")
@@ -363,16 +470,17 @@ with tab_inc:
 
 with tab_inbox:
     people = repo.people(conn)
-    pid = st.selectbox("Inbox for", [p["person_id"] for p in people],
-                       format_func=lambda x: next(f"{x} {p['name']}" for p in people if p["person_id"] == x),
-                       key="inbox_person")
+    pid = st.selectbox("Inbox for", [p["person_id"] for p in people], format_func=names.person, key="inbox_person",
+                       help="The alerts this person received, newest first. Click one to read the full message.")
     notes = repo.notifications_for_person(conn, pid)
     if not notes:
-        st.caption("No notifications.")
+        st.caption("No alerts for this person.")
     for n in notes:
-        ack = "acknowledged" if n["acknowledged_at"] else "not acknowledged"
-        title = (f"{n['notification_id']} · tick {clock.tick_of(n['sent_at'])} · {n['reason']} · "
-                 f"escalation level {n['escalation_level']} · {n['incident_id']} ({n['severity']}, {n['incident_status']}) · {ack}")
+        ack = "acknowledged" if n["acknowledged_at"] else "not acknowledged yet"
+        title = (f"Minute {clock.tick_of(n['sent_at'])} · {explain.NOTICE.get(n['reason'], n['reason'])} · "
+                 f"{n['incident_id']} ({explain.SEVERITY_SHORT[n['severity']]}, "
+                 f"{explain.STATUS.get(n['incident_status'], n['incident_status'])}) · {ack} · "
+                 f"escalation level {n['escalation_level']} · {n['notification_id']}")
         with st.expander(title):
             st.text(n["message"])
 
@@ -380,7 +488,8 @@ with tab_inbox:
 # ----- dead letter ------------------------------------------------------------------
 
 with tab_dl:
-    st.metric("Quarantined records", repo.count_rows(conn, "dead_letter"))
+    st.metric("Rejected bad data (dead letter)", repo.count_rows(conn, "dead_letter"),
+              help="Messages that failed validation. They're kept for inspection, never used, and nothing stops.")
     for r in repo.recent_dead_letters(conn):
-        st.markdown(f"**{r['id']}** · source `{r['source']}` · {r['error_reason']}")
-        st.code(r["raw_payload"], language="json")
+        st.markdown(f"**{r['id']}** · from the `{r['source']}` feed · why rejected: {r['error_reason']}")
+        st.code(r["raw_payload"], language="json", wrap_lines=True)
