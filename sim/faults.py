@@ -245,6 +245,44 @@ Fault = Union[GradualDrift, DriftWithDecoys, DriftNoCause, DriftWithInjection, S
               RecipeChangeNoFault, RecipeChangeOutOfSpec]
 
 
+def live_fault(fault_type: str, world: World, sensor_id: str, now_tick: int) -> Fault:
+    """A fault of this type on this sensor, starting as soon as it validly can
+    (for injection from the dashboard). Planted entries need a tick before the
+    fault starts, and fault 8's earliest decoy is 20 ticks before it."""
+    tool = world.sensor(sensor_id).tool_id
+    if fault_type == "gradual_drift":
+        return GradualDrift(sensor_id, start_tick=now_tick + 2)
+    if fault_type == "step_shift":
+        return StepShift(sensor_id, start_tick=now_tick + 1)
+    if fault_type == "dropout":
+        return Dropout(sensor_id, start_tick=now_tick + 1, duration_ticks=20)
+    if fault_type == "drift_with_decoys":
+        other = next(t.tool_id for t in world.tools if t.tool_id != tool)
+        decoys = tuple(Decoy(d.offset_ticks, d.description, other if d.tool_id else None) for d in DEFAULT_DECOYS)
+        return DriftWithDecoys(sensor_id, start_tick=now_tick + 21, decoys=decoys)
+    if fault_type == "drift_no_cause":
+        return DriftNoCause(sensor_id, start_tick=now_tick + 1)
+    if fault_type == "prompt_injection":
+        return DriftWithInjection(sensor_id, start_tick=now_tick + 2)
+    if fault_type == "recipe_change_no_fault":
+        return RecipeChangeNoFault(sensor_id, start_tick=now_tick + 1)
+    if fault_type == "recipe_change_out_of_spec":
+        return RecipeChangeOutOfSpec(sensor_id, start_tick=now_tick + 1)
+    raise ValueError(f"no live fault type {fault_type!r}")
+
+
+LIVE_FAULT_TYPES = ("gradual_drift", "step_shift", "dropout", "drift_with_decoys", "drift_no_cause", "prompt_injection",
+                    "recipe_change_no_fault", "recipe_change_out_of_spec")
+
+
+def demo_faults(warmup_ticks: int) -> list[Fault]:
+    """The dashboard's demo scenario: a drift on T-01's temperature, 30 ticks after
+    warm-up, right after a planted maintenance entry. (The noisy-but-healthy
+    sensor S-04-TEMP is part of the world; T-03 and T-05 stay fault-free, so a
+    recipe change can be triggered live on them.)"""
+    return [GradualDrift("S-01-TEMP", start_tick=warmup_ticks + 30)]
+
+
 def default_faults(world: World, warmup_ticks: int = 150) -> list[Fault]:
     """One of each fault 1-4, on four different tools, all after warm-up.
 

@@ -10,13 +10,15 @@ from typing import Iterator
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 
-def connect(path: str | Path) -> sqlite3.Connection:
+def connect(path: str | Path, check_same_thread: bool = True) -> sqlite3.Connection:
     """Open a connection with WAL journaling and foreign-key enforcement.
 
     isolation_level=None turns off the sqlite3 module's implicit transactions,
     so the only transactions are the ones opened by `transaction()` below.
+    check_same_thread=False is for the dashboard: Streamlit may run each rerun
+    on a different thread, but reruns of one session never overlap.
     """
-    conn = sqlite3.connect(str(path), isolation_level=None)
+    conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     # foreign_keys is per-connection, so it must be set on every connect,
     # not just once in schema.sql.

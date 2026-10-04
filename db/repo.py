@@ -545,3 +545,76 @@ def active_process_incidents_to_refresh(conn) -> list:
         " AND severity IN ('medium', 'high') AND rule_fired != 'dropout' ORDER BY incident_id",
         ACTIVE_INCIDENT_STATUSES,
     ).fetchall()
+
+
+# ===== Dashboard views (read-only) =============================================
+
+def all_sensors(conn) -> list:
+    return conn.execute("SELECT * FROM sensors ORDER BY sensor_id").fetchall()
+
+
+def people(conn) -> list:
+    return conn.execute("SELECT * FROM people ORDER BY person_id").fetchall()
+
+
+def tool_overview(conn) -> list:
+    """Each tool with its state and its active incidents by severity."""
+    return conn.execute(
+        "SELECT t.tool_id, t.name, t.kind, ts.status, ts.current_recipe_id,"
+        " SUM(i.severity = 'high') AS high, SUM(i.severity = 'medium') AS medium, SUM(i.severity = 'low') AS low"
+        " FROM tools t JOIN tool_state ts USING (tool_id)"
+        f" LEFT JOIN incidents i ON i.tool_id = t.tool_id AND i.status IN {_in(ACTIVE_INCIDENT_STATUSES)}"
+        " GROUP BY t.tool_id ORDER BY t.tool_id",
+        ACTIVE_INCIDENT_STATUSES,
+    ).fetchall()
+
+
+def readings_since(conn, sensor_id: str, since: str) -> list:
+    return conn.execute(
+        "SELECT reading_id, value, ts FROM readings WHERE sensor_id = ? AND ts >= ? ORDER BY ts", (sensor_id, since)
+    ).fetchall()
+
+
+def incidents_on_sensor(conn, sensor_id: str) -> list:
+    return conn.execute("SELECT * FROM incidents WHERE sensor_id = ? ORDER BY opened_at", (sensor_id,)).fetchall()
+
+
+def incidents_by_tier(conn, actionable: bool, active_only: bool) -> list:
+    """Medium/high (notified) or low (watch list) incidents, newest first."""
+    sev = ("medium", "high") if actionable else ("low",)
+    q = f"SELECT * FROM incidents WHERE severity IN {_in(sev)}"
+    args: tuple = sev
+    if active_only:
+        q += f" AND status IN {_in(ACTIVE_INCIDENT_STATUSES)}"
+        args += ACTIVE_INCIDENT_STATUSES
+    return conn.execute(q + " ORDER BY opened_at DESC, incident_id DESC", args).fetchall()
+
+
+def diagnoses_for_incident(conn, incident_id: str) -> list:
+    return conn.execute(
+        "SELECT * FROM diagnoses WHERE incident_id = ? ORDER BY created_at, diagnosis_id", (incident_id,)
+    ).fetchall()
+
+
+def lots_by_ids(conn, lot_ids: list[str]) -> list:
+    if not lot_ids:
+        return []
+    return conn.execute(f"SELECT * FROM lots WHERE lot_id IN {_in(lot_ids)} ORDER BY lot_id", tuple(lot_ids)).fetchall()
+
+
+def notifications_for_person(conn, person_id: str) -> list:
+    return conn.execute(
+        "SELECT n.*, i.sensor_id, i.tool_id, i.severity, i.status AS incident_status FROM notifications n"
+        " JOIN incidents i USING (incident_id) WHERE n.person_id = ? ORDER BY n.sent_at DESC, n.notification_id DESC",
+        (person_id,),
+    ).fetchall()
+
+
+def recent_dead_letters(conn, limit: int = 5) -> list:
+    return conn.execute("SELECT * FROM dead_letter ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+
+
+def count_by_status(conn, table: str, column: str, value: str) -> int:
+    if (table, column) not in {("incidents", "status"), ("lots", "status")}:
+        raise ValueError((table, column))
+    return conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} = ?", (value,)).fetchone()[0]

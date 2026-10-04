@@ -7,6 +7,7 @@ dependencies = [
     "anthropic>=1.11",
     "pydantic>=2",
     "pytest>=8",
+    "streamlit>=1.40",
 ]
 
 [tool.pytest.ini_options]

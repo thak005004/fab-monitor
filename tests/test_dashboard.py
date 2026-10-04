@@ -1,0 +1,107 @@
+"""Dashboard smoke tests, headless via Streamlit's AppTest. FakeClient is forced,
+so these never call the real API."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+from streamlit.testing.v1 import AppTest
+
+from agents.diagnosis.client import FailingClient
+
+APP = str(Path(__file__).resolve().parents[1] / "dashboard" / "app.py")
+
+
+@pytest.fixture
+def at(monkeypatch):
+    monkeypatch.setenv("FAB_MONITOR_LLM", "fake")
+    app = AppTest.from_file(APP, default_timeout=120)
+    app.run()
+    assert not app.exception, app.exception
+    return app
+
+
+def click(app, label: str, where=None):
+    button = next(b for b in (where or app).button if b.label == label)
+    button.click().run()
+    assert not app.exception, app.exception
+
+
+def metric(app, label: str):
+    return next(m.value for m in app.metric if m.label == label)
+
+
+def system(app):
+    return app.session_state.system
+
+
+def test_loads_demo_with_banner_and_config_version(at):
+    assert any("Simulated data" in e.value for e in at.error)
+    assert metric(at, "Tick") == "150"  # warm-up done
+    assert metric(at, "Active config") == system(at).config.version
+    faults = system(at).conn.execute("SELECT fault_type, sensor_id FROM fault_injections").fetchall()
+    assert ("gradual_drift", "S-01-TEMP") in [tuple(r) for r in faults]
+
+
+def test_advance_buttons(at):
+    click(at, "+1", at.sidebar)
+    click(at, "+10", at.sidebar)
+    click(at, "+50", at.sidebar)
+    assert metric(at, "Tick") == "211"
+
+
+def test_malformed_event_is_quarantined(at):
+    click(at, "Send a malformed event", at.sidebar)
+    assert metric(at, "Dead-letter records") == "1"
+    assert any("quarantined" in w.value for w in at.warning)
+
+
+def test_recipe_change_starts_relearning(at):
+    click(at, "Change recipe", at.sidebar)  # defaults to T-05
+    states = {r["baseline_status"] for r in system(at).conn.execute(
+        "SELECT ss.baseline_status FROM sensor_state ss JOIN sensors s USING (sensor_id) WHERE s.tool_id = 'T-05'")}
+    assert states == {"relearning"}
+
+
+def test_inject_fault_writes_ground_truth(at):
+    at.sidebar.selectbox(key="f_type").set_value("step_shift").run()
+    click(at, "Inject", at.sidebar)
+    rows = system(at).conn.execute("SELECT fault_type FROM fault_injections").fetchall()
+    assert "step_shift" in [r[0] for r in rows]
+
+
+def test_kill_llm_toggle_and_availability(at):
+    at.sidebar.toggle[0].set_value(True).run()
+    assert isinstance(system(at).orchestrator.llm, FailingClient)
+    at.sidebar.toggle[0].set_value(False).run()
+    assert not isinstance(system(at).orchestrator.llm, FailingClient)
+
+    click(at, "Mark unavailable", at.sidebar)
+    first = system(at).conn.execute("SELECT available FROM people ORDER BY person_id LIMIT 1").fetchone()[0]
+    assert first == 0
+
+
+def test_drift_incident_detail_citations_and_acknowledge(at):
+    for _ in range(3):
+        click(at, "+50", at.sidebar)
+    conn = system(at).conn
+    inc = conn.execute("SELECT * FROM incidents WHERE sensor_id = 'S-01-TEMP' AND severity IN ('medium', 'high')"
+                       " ORDER BY opened_at LIMIT 1").fetchone()
+    assert inc is not None
+    at.selectbox(key="incident_detail").set_value(inc["incident_id"]).run()
+    planted = conn.execute("SELECT planted_cause_id FROM fault_injections WHERE fault_type = 'gradual_drift'").fetchone()[0]
+    citations = next(df.value for df in at.dataframe if "verified" in df.value.columns)
+    row = citations[citations["id"] == planted].iloc[0]
+    assert row["verified"] == "✅" and "heater" in row["text"].lower()
+
+    status = inc["status"]
+    click(at, "Acknowledge")
+    after = conn.execute("SELECT status FROM incidents WHERE incident_id = ?", (inc["incident_id"],)).fetchone()[0]
+    assert after == ("acknowledged" if status == "open" else status)
+    # Inbox shows the owner's notification.
+    owner = conn.execute("SELECT owner_id FROM incidents WHERE incident_id = ?", (inc["incident_id"],)).fetchone()[0]
+    at.selectbox(key="inbox_person").set_value(owner).run()
+    assert any(inc["incident_id"] in e.label for e in at.expander)
+    assert json.loads(inc["lots_at_risk"])
