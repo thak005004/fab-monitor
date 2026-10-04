@@ -281,20 +281,24 @@ def false_alarm_dismissed_since(conn, sensor_id: str, rules: tuple[str, ...], si
 
 def insert_incident(
     conn, incident_id: str, tool_id: str, sensor_id: str, rule_fired: str, severity: str,
-    onset_ts: str, now: str, config_version: str,
+    onset_ts: str, now: str, config_version: str, trigger_reading_ids_json: str = "[]",
 ) -> None:
     conn.execute(
-        "INSERT INTO incidents (incident_id, tool_id, sensor_id, rule_fired, severity, onset_ts,"
+        "INSERT INTO incidents (incident_id, tool_id, sensor_id, rule_fired, trigger_reading_ids, severity, onset_ts,"
         " opened_at, updated_at, status, config_version, lots_at_risk)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, '[]')",
-        (incident_id, tool_id, sensor_id, rule_fired, severity, onset_ts, now, now, config_version),
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, '[]')",
+        (incident_id, tool_id, sensor_id, rule_fired, trigger_reading_ids_json, severity, onset_ts, now, now,
+         config_version),
     )
 
 
-def update_incident_trigger(conn, incident_id: str, rule_fired: str, severity: str, onset_ts: str, now: str) -> None:
+def update_incident_trigger(conn, incident_id: str, rule_fired: str, severity: str, onset_ts: str, now: str,
+                            trigger_reading_ids_json: str | None = None) -> None:
+    """trigger_reading_ids_json=None keeps the stored trigger readings."""
     conn.execute(
-        "UPDATE incidents SET rule_fired = ?, severity = ?, onset_ts = ?, updated_at = ? WHERE incident_id = ?",
-        (rule_fired, severity, onset_ts, now, incident_id),
+        "UPDATE incidents SET rule_fired = ?, severity = ?, onset_ts = ?, updated_at = ?,"
+        " trigger_reading_ids = COALESCE(?, trigger_reading_ids) WHERE incident_id = ?",
+        (rule_fired, severity, onset_ts, now, trigger_reading_ids_json, incident_id),
     )
 
 
@@ -405,6 +409,15 @@ def readings_before(conn, sensor_id: str, at_or_before: str, limit: int) -> list
         (sensor_id, at_or_before, limit),
     ).fetchall()
     return rows[::-1]
+
+
+def readings_by_ids(conn, reading_ids: list[str]) -> list:
+    if not reading_ids:
+        return []
+    return conn.execute(
+        f"SELECT reading_id, tool_id, value, ts FROM readings WHERE reading_id IN {_in(reading_ids)} ORDER BY ts",
+        tuple(reading_ids),
+    ).fetchall()
 
 
 def readings_after(conn, sensor_id: str, after: str, until: str, limit: int) -> list:

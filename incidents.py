@@ -73,7 +73,7 @@ def open_or_update(conn: sqlite3.Connection, trigger: Trigger, clock: Clock, con
         incident_id = f"INC-{repo.count_rows(conn, 'incidents') + 1:04d}"
         repo.insert_incident(
             conn, incident_id, trigger.tool_id, trigger.sensor_id, trigger.rule_fired, severity,
-            trigger.onset_ts, now, config.version,
+            trigger.onset_ts, now, config.version, json.dumps(list(trigger.triggering_reading_ids)),
         )
         return dict(repo.get_incident(conn, incident_id)), Change.NEW
 
@@ -81,13 +81,18 @@ def open_or_update(conn: sqlite3.Connection, trigger: Trigger, clock: Clock, con
     # measured from) and keeps the earliest onset seen.
     onset = min(current["onset_ts"], trigger.onset_ts)
     quiet = clock.ticks_between(current["updated_at"], now)
+    # Remember the readings behind the latest firing of the incident's current
+    # rule (the evidence bundle shows them). A weaker rule doesn't replace them.
+    trigger_ids = json.dumps(list(trigger.triggering_reading_ids))
     if SEVERITY_RANK[severity] > SEVERITY_RANK[current["severity"]]:
         # An upgrade after a quiet spell is reported as UPGRADED: it re-notifies
         # either way, and "upgraded" also tells the person the severity rose.
-        repo.update_incident_trigger(conn, current["incident_id"], trigger.rule_fired, severity, onset, now)
+        repo.update_incident_trigger(conn, current["incident_id"], trigger.rule_fired, severity, onset, now, trigger_ids)
         change = Change.UPGRADED
     else:
-        repo.update_incident_trigger(conn, current["incident_id"], current["rule_fired"], current["severity"], onset, now)
+        same_rule = trigger.rule_fired == current["rule_fired"]
+        repo.update_incident_trigger(conn, current["incident_id"], current["rule_fired"], current["severity"], onset, now,
+                                     trigger_ids if same_rule else None)
         change = Change.REACTIVATED if quiet >= config.reactivation_quiet_ticks else Change.NONE
     return dict(repo.get_incident(conn, current["incident_id"])), change
 

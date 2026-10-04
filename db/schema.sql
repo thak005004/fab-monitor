@@ -103,6 +103,7 @@ CREATE TABLE incidents (
   tool_id TEXT NOT NULL,
   sensor_id TEXT NOT NULL,
   rule_fired TEXT NOT NULL,          -- the worst rule seen so far
+  trigger_reading_ids TEXT,          -- JSON list: readings in the latest firing of rule_fired
   severity TEXT NOT NULL,            -- low | medium | high
   onset_ts TEXT,                     -- estimated start of the problem, not detection time
   opened_at TEXT NOT NULL,

@@ -164,6 +164,7 @@ CREATE TABLE incidents (
   tool_id TEXT NOT NULL,
   sensor_id TEXT NOT NULL,
   rule_fired TEXT NOT NULL,          -- the worst rule seen so far
+  trigger_reading_ids TEXT,          -- JSON list: readings in the latest firing of rule_fired
   severity TEXT NOT NULL,            -- low | medium | high
   onset_ts TEXT,                     -- estimated start of the problem, not detection time
   opened_at TEXT NOT NULL,
@@ -437,7 +438,9 @@ Runs when an incident is `NEW`, `UPGRADED` or `REACTIVATED` **at medium or high 
 ### Evidence bundle
 Built in code, per tool, within `diagnosis_lookback_ticks` before now:
 - Incident summary: sensor, rule fired, onset, control limits, spec limits
-- Up to `max_evidence_readings` readings of the incident's sensor around the onset (up to half at or before it, the rest after), each with its `RD-` ID
+- Up to `max_evidence_readings` readings of the incident's sensor, each with its `RD-` ID, split between two windows (overlaps counted once):
+  - **Latest-trigger window** (up to half the budget, more only if the trigger itself needs it): the readings that fired the incident's current rule, plus the readings just before them. Each incident stores these as `trigger_reading_ids`: set when it opens or upgrades, and refreshed whenever its current rule fires again (a weaker rule doesn't replace them). After an upgrade to `beyond_spec`, this is what puts the out-of-spec reading in front of the model. Those readings are flagged `fired_current_rule`, and the incident summary lists their IDs.
+  - **Onset window** (the rest of the budget): half at or before the onset, the rest after it.
 - Maintenance entries for this tool, each with its `M-` ID and timestamp
 - Recipe changes for this tool, each with its `RC-` ID and timestamp
 
