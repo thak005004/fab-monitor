@@ -99,13 +99,33 @@ def load_demo() -> None:
         db_path, seed=42, llm=llm, faults_after_warmup=demo_faults(DEFAULT_WARMUP_TICKS), check_same_thread=False,
     )
     st.session_state.llm, st.session_state.llm_label = llm, label
-    st.session_state.flash = ("info", "Demo loaded. At minute 180, T-01's temperature (S-01-TEMP) starts drifting, "
-                                      "right after a maintenance entry. S-04-TEMP is noisy but healthy. T-03 and T-05 "
-                                      "have no problems: try a recipe change there.")
+    flash("info", "Demo loaded at minute 150. At minute 180, T-01's temperature (S-01-TEMP) starts drifting, "
+                  "right after a maintenance entry. S-04-TEMP is noisy but healthy. T-03 and T-05 "
+                  "have no problems: try a recipe change there.")
 
 
-def flash(kind: str, text: str) -> None:
-    st.session_state.flash = (kind, text)
+def flash(kind: str, text: str, box: bool = True) -> None:
+    """Feedback for the next rerun: always a pop-up (toast), which shows even when the
+    sidebar covers the page or the page is scrolled, plus a box at the top of the page
+    unless box is False."""
+    st.session_state.flash = (kind, text, box)
+
+
+TOAST_ICONS = {"success": ":material/check_circle:", "info": ":material/info:",
+               "warning": ":material/warning:", "error": ":material/error:"}
+
+
+def default_recipe_name() -> None:
+    """When the recipe machine changes, suggest a recipe name for that machine."""
+    st.session_state.r_recipe = f"R-{st.session_state.r_tool[2:]}-B"
+
+
+def outage_changed() -> None:
+    if st.session_state.kill_llm:
+        flash("warning", "AI outage on: new alerts will go out without an AI diagnosis. "
+                         "Move time forward to see it.")
+    else:
+        flash("success", "AI back on: new alerts get an AI diagnosis again.")
 
 
 if "system" not in st.session_state:
@@ -120,7 +140,9 @@ names = Names(conn)
 with st.sidebar:
     st.subheader("Run the simulation")
     if st.button("Load demo scenario", width="stretch",
-                 help="Start over with the demo: a slow temperature drift on T-01 that begins at minute 180."):
+                 help="Start over with the demo: a slow temperature drift on T-01 that begins at minute 180. "
+                      "Also turns the AI outage off."):
+        st.session_state.kill_llm = False  # starting over means the AI is back on too
         load_demo()
         st.rerun()
 
@@ -129,11 +151,16 @@ with st.sidebar:
     for col, n in zip(cols, (1, 10, 50)):
         if col.button(f"+{n}", width="stretch",
                       help=f"Run the factory forward {n} simulated minute{'s' if n > 1 else ''}; every sensor reports once a minute."):
+            before = repo.count_rows(conn, "incidents")
             system.advance(n)
+            found = repo.count_rows(conn, "incidents") - before
+            flash("info", f"Moved forward {n} minute{'s' if n > 1 else ''}, to minute {clock.tick}. "
+                          + (f"{found} new problem{'s' if found != 1 else ''} found: see Activity or Incidents."
+                             if found else "No new problems."), box=False)
             st.rerun()
 
     # Keyed with a constant default so the widget keeps its own state across reruns.
-    killed = st.toggle("Simulate AI outage", value=False, key="kill_llm",
+    killed = st.toggle("Simulate AI outage", value=False, key="kill_llm", on_change=outage_changed,
                        help="Turn the AI off (Kill LLM: the FailingClient) to show that alerts still go out without it.")
     system.orchestrator.llm = FailingClient() if killed else st.session_state.llm
     st.caption(f"AI: {'off (simulated outage)' if killed else st.session_state.llm_label}")
@@ -162,15 +189,25 @@ with st.sidebar:
 
     st.markdown("**Switch a recipe**")
     r_tool = st.selectbox("Machine", tools, index=tools.index("T-05") if "T-05" in tools else 0, key="r_tool",
-                          format_func=names.tool, help="The machine that switches to a new process recipe.")
-    r_recipe = st.text_input("New recipe name", value=f"R-{r_tool[2:]}-B", key="r_recipe",
+                          format_func=names.tool, on_change=default_recipe_name,
+                          help="The machine that switches to a new process recipe.")
+    if "r_recipe" not in st.session_state:
+        default_recipe_name()
+    r_recipe = st.text_input("New recipe name", key="r_recipe",
                              help="Name of the new recipe (recipe ID): the process settings the machine runs.")
     if st.button("Change recipe", width="stretch",
                  help="A new recipe changes what 'normal' looks like, so the machine's sensors re-learn it."):
-        ok = system.recipe_change(r_tool, r_recipe)
-        flash("success" if ok else "error",
-              f"{names.tool(r_tool)} switched to recipe {r_recipe}: its sensors are learning the new normal (relearning)."
-              if ok else "Recipe change was rejected.")
+        recipe = r_recipe.strip()
+        current = next(t["current_recipe_id"] for t in repo.tool_overview(conn) if t["tool_id"] == r_tool)
+        if not recipe:
+            flash("error", "Type a name for the new recipe first.")
+        elif recipe == current:
+            flash("error", f"{names.tool(r_tool)} is already running recipe {recipe}. Type a different name.")
+        elif system.recipe_change(r_tool, recipe):
+            flash("success", f"{names.tool(r_tool)} switched to recipe {recipe}: its sensors are learning the new "
+                             "normal (relearning).")
+        else:
+            flash("error", f"The recipe change was rejected (see Rejected bad data): {recipe!r} isn't a valid name.")
         st.rerun()
 
     st.markdown("**Garble a message**")
@@ -192,9 +229,17 @@ with st.sidebar:
     available = next(p["available"] for p in people if p["person_id"] == p_id)
     if st.button("Mark unavailable" if available else "Mark available", width="stretch",
                  help="Someone calls out: their open, unanswered alerts move to the next qualified person."):
+        owned = [i["incident_id"] for i in repo.open_incidents_owned_by(conn, p_id)] if available else []
         system.set_availability(p_id, not available)
-        flash("success", f"{names.person(p_id)} marked "
-                         f"{'unavailable: their open alerts are reassigned' if available else 'available'}.")
+        if not available:
+            flash("success", f"{names.person(p_id)} marked available.")
+        else:
+            moved = [iid for iid in owned if repo.get_incident(conn, iid)["owner_id"] != p_id]
+            flash("success", f"{names.person(p_id)} marked unavailable. "
+                  + (f"Their unanswered alert{'s' if len(moved) != 1 else ''} {', '.join(moved)} "
+                     f"{'were' if len(moved) != 1 else 'was'} passed to the next qualified person." if moved else
+                     "No one else could take their unanswered alerts, so they stay with them." if owned else
+                     "They had no unanswered alerts to pass on."))
         st.rerun()
 
 
@@ -212,8 +257,10 @@ with st.expander("What you're looking at", expanded=True):
 # every action button.
 flash_slot = st.container()
 if "flash" in st.session_state:
-    kind, text = st.session_state.pop("flash")
-    getattr(flash_slot, kind)(text)
+    kind, text, box = st.session_state.pop("flash")
+    st.toast(text, icon=TOAST_ICONS[kind])
+    if box:
+        getattr(flash_slot, kind)(text)
 
 notified_active = repo.incidents_by_tier(conn, actionable=True, active_only=True)
 watch = repo.incidents_by_tier(conn, actionable=False, active_only=True)

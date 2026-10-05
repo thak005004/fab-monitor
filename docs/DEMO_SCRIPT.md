@@ -13,7 +13,7 @@ cd ~/fab-monitor
 
 The dashboard uses Claude if `ANTHROPIC_API_KEY` is set, otherwise scripted responses; the sidebar's "AI:" line says which. Time is simulated: one step (tick) is one minute, shown as **Minute**. Every label shows its technical term in parentheses or on hover. Raw IDs that the story doesn't need (diagnosis IDs, evidence record IDs, escalation levels, the settings version, raw rejected data) are in collapsed **Technical details** sections; open them when a step below points there.
 
-Status colors are the same everywhere: 🟢 healthy, 🟠 watch or alert, 🔴 urgent, ⚪ closed. The sidebar has three groups: **Run the simulation**, **Cause a problem** and **People**.
+Status colors are the same everywhere: 🟢 healthy, 🟠 watch or alert, 🔴 urgent, ⚪ closed. The sidebar has three groups: **Run the simulation**, **Cause a problem** and **People**. Every sidebar action confirms itself with a short pop-up in the corner of the screen, so you can see it worked even when the sidebar covers the page. **Load demo scenario** also turns the AI outage off.
 
 ## 1. Open the page (demo scenario loads)
 
@@ -77,7 +77,7 @@ Press **Send bad data** (sidebar, *Cause a problem → Garble a message*).
 
 ## 6. Simulate an AI outage, then press **+50** → minute 250
 
-Turn on **Simulate AI outage** in the sidebar. The line below changes to "AI: off (simulated outage)". Then press **+50**.
+Turn on **Simulate AI outage** in the sidebar. A pop-up says "AI outage on: new alerts will go out without an AI diagnosis", and the line below changes to "AI: off (simulated outage)". Then press **+50**.
 
 **You see** (INC-0008 detail):
 - **Minute 213:** INC-0008 is acknowledged but still showing problems 15 minutes after its last alert, so Avery Lin (P-01) gets a **still active** reminder (persistent). The AI's answer is now **⚠️ AI unavailable: alert sent without it (unavailable)**; its **Technical details** show diagnosis **DX-00005** and the reason "LLM unavailable: LLM disabled (kill switch)". The reminder went out anyway.
