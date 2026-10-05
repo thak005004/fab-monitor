@@ -318,3 +318,71 @@ def incident_summary(conn, inc, clock: Clock, config: Config, names: Names) -> s
         else:
             product += "."
     return f"{first}. {who} {product}"
+
+
+# ----- behind the scenes: the database -------------------------------------------------
+
+DB_GROUPS = [  # (group, what the group is, [(table, one-line description)])
+    ("Reference data", "Fixed facts about the factory, seeded once.", [
+        ("tools", "The machines (tools)."),
+        ("sensors", "Each machine's sensors, with their fixed allowed range (spec limits)."),
+        ("people", "Engineers who can be alerted, and whether they're available."),
+        ("tool_qualifications", "Who is qualified to handle which machine."),
+    ]),
+    ("Live state", "What's true right now; updated in place.", [
+        ("tool_state", "Each machine's current status and recipe."),
+        ("sensor_state", "Each sensor's learned normal range and whether it's learning."),
+        ("lots", "Product batches (lots), marked at risk or on hold as things happen."),
+    ]),
+    ("Append-only history", "Everything that happened, only ever added to.", [
+        ("events", "The event log: every accepted record, in order. State can be rebuilt from it."),
+        ("readings", "Every sensor reading."),
+        ("maintenance_log", "Maintenance notes (free text; treated as data, never as instructions)."),
+        ("recipe_changes", "Every recipe switch."),
+        ("baseline_windows", "Each completed learning period for a sensor's normal range."),
+        ("logged_firings", "Steady trends, recorded but never alerted on (log-only rules)."),
+        ("dead_letter", "Rejected bad data, kept for inspection (dead letter)."),
+    ]),
+    ("Outputs and audit", "What the system decided, and why.", [
+        ("incidents", "Problems found: what, where, how serious, and who owns them."),
+        ("diagnoses", "Every AI answer, what it was shown, and whether its citations checked out."),
+        ("notifications", "Every alert sent to a person, with its fixed (non-AI) message."),
+        ("config_versions", "Saved settings versions. Unused: settings reloading was left out of this build."),
+    ]),
+    ("Ground truth", "The answer key: written only by the simulator, read only by the evaluation.", [
+        ("fault_injections", "Which problems were planted, where and when; the system never reads it."),
+    ]),
+]
+
+EVENT_TYPES = {"reading": "Sensor reading", "maintenance": "Maintenance note", "recipe_change": "Recipe change",
+               "person_availability": "Availability change", "alert_action": "Person's action", "tick": "Clock tick"}
+
+# Summary of eval_results/database_report.md (tests check these numbers against the report).
+DB_REPORT_URL = "https://github.com/thak005004/fab-monitor/blob/main/eval_results/database_report.md"
+DB_REPORT = {
+    "replay_events": 6470,
+    "replay_tables": 6,
+    "violations": 0,
+    "audit_ticks": 10000,
+    "index_ms": "0.041",
+    "no_index_ms": "25.6",
+    "speedup": "about 550–620×",
+}
+
+
+def event_details(event_type: str, payload: dict) -> str:
+    """One event's payload in plain words."""
+    p = payload
+    if event_type == "reading":
+        return f"{p.get('sensor_id')} read {p.get('value')} ({p.get('reading_id')})"
+    if event_type == "maintenance":
+        return f"{p.get('log_id')}: \u201c{p.get('description', '')}\u201d"
+    if event_type == "recipe_change":
+        return f"switched to recipe {p.get('recipe_id')} ({p.get('change_id')})"
+    if event_type == "person_availability":
+        return f"{p.get('person_id')} marked {'available' if p.get('available') else 'unavailable'}"
+    if event_type == "alert_action":
+        return f"{p.get('person_id')}: {p.get('action', '').replace('_', ' ')} {p.get('incident_id')}"
+    if event_type == "tick":
+        return f"minute {p.get('tick')} ends; time-based checks run"
+    return json.dumps(p, sort_keys=True)

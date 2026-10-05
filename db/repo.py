@@ -659,3 +659,15 @@ def events_of_type(conn, event_type: str) -> list:
 
 def reading_at(conn, sensor_id: str, ts: str):
     return conn.execute("SELECT * FROM readings WHERE sensor_id = ? AND ts = ?", (sensor_id, ts)).fetchone()
+
+
+# ===== Dashboard: database tab (read-only) ====================================
+
+def table_row_counts(conn) -> dict[str, int]:
+    """Row count of every table in the schema."""
+    names = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]
+    return {n: conn.execute(f'SELECT COUNT(*) FROM "{n}"').fetchone()[0] for n in names}
+
+
+def recent_events(conn, limit: int = 20) -> list:
+    return conn.execute("SELECT * FROM events ORDER BY event_id DESC LIMIT ?", (limit,)).fetchall()

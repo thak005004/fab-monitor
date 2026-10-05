@@ -269,8 +269,8 @@ with st.expander("Technical details"):
         f"{config.persistence_ticks} minutes still active; close after {config.stale_after_ticks} quiet minutes\n"
         f"- Severity of each rule: " + ", ".join(f"{k} → {v}" for k, v in config.severity_map.items()))
 
-tab_feed, tab_chart, tab_inc, tab_inbox, tab_dl = st.tabs(
-    ["Activity", "Sensor chart", "Incidents", "Inboxes", "Rejected bad data"])
+tab_feed, tab_chart, tab_inc, tab_inbox, tab_dl, tab_db = st.tabs(
+    ["Activity", "Sensor chart", "Incidents", "Inboxes", "Rejected bad data", "Behind the scenes: the database"])
 
 
 # ----- activity feed ---------------------------------------------------------------
@@ -584,3 +584,55 @@ with tab_dl:
             with st.expander("Technical details"):
                 st.markdown(f"Why rejected: {r['error_reason']}")
                 st.code(r["raw_payload"], language="json", wrap_lines=True)
+
+
+# ----- behind the scenes: the database (read-only) ------------------------------------
+
+TABLE_COLUMNS = {
+    "Table": st.column_config.TextColumn("Table", width=150),
+    "What it holds": st.column_config.TextColumn("What it holds", width="large"),
+    "Rows": st.column_config.NumberColumn("Rows", width=80, format="localized"),
+}
+EVENT_COLUMNS = {
+    "Minute": st.column_config.NumberColumn("Minute", width=62),
+    "Event": st.column_config.TextColumn("Event", width=104, help="Event ID: assigned in order as each event arrives."),
+    "Type": st.column_config.TextColumn("Type", width=140),
+    "From": st.column_config.TextColumn("From", width=96, help="The feed it came in on (adapter)."),
+    "Machine": st.column_config.TextColumn("Machine", width=70),
+    "Details": st.column_config.TextColumn("Details", width="large"),
+}
+
+with tab_db:
+    st.caption("A read-only look at where everything on this page is stored: one SQLite database for your browser "
+               "session. Nothing here changes anything.")
+    counts = repo.table_row_counts(conn)
+    for group, blurb, tables in explain.DB_GROUPS:
+        st.markdown(f"**{group}** · {blurb}",
+                    help="Row counts are for this session's database, as of the current minute.")
+        st.dataframe(pd.DataFrame([{"Table": t, "What it holds": text, "Rows": counts.get(t, 0)} for t, text in tables]),
+                     hide_index=True, width="stretch", column_config=TABLE_COLUMNS)
+
+    st.markdown("**Event log: the 20 most recent events**",
+                help="Every record the system accepts goes into the events table first, in order. Newest first. "
+                     "Most are sensor readings and the once-a-minute clock tick.")
+    st.dataframe(pd.DataFrame([{
+        "Minute": clock.tick_of(e["ts"]), "Event": e["event_id"],
+        "Type": explain.EVENT_TYPES.get(e["event_type"], e["event_type"]), "From": e["source"],
+        "Machine": e["tool_id"] or "-", "Details": explain.event_details(e["event_type"], json.loads(e["payload"])),
+    } for e in repo.recent_events(conn, 20)]), hide_index=True, width="stretch", height=738,  # all 20 rows, no inner scroll
+        column_config=EVENT_COLUMNS)
+
+    r = explain.DB_REPORT
+    st.markdown("**Database checks**", help="Three checks run offline on separate simulation databases "
+                "(scripts/replay_events.py, integrity_audit.py, index_benchmark.py), not on this session.")
+    with st.container(border=True):
+        st.markdown(
+            f"- **Event replay: matched exactly.** Feeding the {r['replay_events']:,} logged events of the demo into an "
+            f"empty database rebuilt the {r['replay_tables']} tables it compares (machine and sensor state, learning "
+            "periods, incidents, alerts, batches) row for row.\n"
+            f"- **Integrity audit: {r['violations']} violations**, on the demo and on a {r['audit_ticks']:,}-minute run "
+            "(unknown references, unalerted problems, unchecked citations, unexplained holds, orphan alerts, "
+            "impossible status changes).\n"
+            f"- **Index on (sensor_id, ts): {r['speedup']} faster.** One sensor's latest readings take "
+            f"{r['index_ms']} ms with it and {r['no_index_ms']} ms without it, at 150,000 readings.")
+        st.markdown(f"[Read the full database report on GitHub]({explain.DB_REPORT_URL})")

@@ -77,10 +77,12 @@ Other scripts: `scripts/run_sim.py` (one scenario, printed), `scripts/false_alar
 One SQLite file (WAL mode, foreign keys on); the schema is `db/schema.sql`. The tables fall into five groups:
 
 - **Reference data:** `tools`, `sensors` (with fixed spec limits), `people`, `tool_qualifications`. Seeded once and never changed by events, except a person's availability.
-- **Live state:** `tool_state`, `sensor_state`. Current values, updated by merge only.
-- **Append-only history:** `events` (every accepted event, in order), `readings`, `maintenance_log`, `recipe_changes`, `baseline_windows`, `logged_firings`, and `dead_letter` (rejected records). `lots` holds the manufacturing context: the seeded schedule, whose status changes to at risk or held.
+- **Live state:** `tool_state`, `sensor_state` (current values, updated by merge only), and `lots` (the seeded batch schedule, whose status changes to at risk or held).
+- **Append-only history:** `events` (every accepted event, in order), `readings`, `maintenance_log`, `recipe_changes`, `baseline_windows`, `logged_firings`, and `dead_letter` (rejected records).
 - **Outputs and audit:** `incidents`, `diagnoses` (with the exact evidence bundle and raw model responses), `notifications`, `config_versions`.
 - **Ground truth:** `fault_injections`. Written only by the simulator and read only by evaluation, never by the system under test.
+
+The dashboard's **Behind the scenes: the database** tab shows these groups with live row counts, the latest events, and a summary of the checks below.
 
 Three standalone checks. Each one only reads an existing database or writes a new temporary one. Results are in `eval_results/database_report.md`.
 
