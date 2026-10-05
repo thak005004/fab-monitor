@@ -89,3 +89,46 @@ def test_page_opens_with_the_explanation_and_plain_labels(monkeypatch):
     assert feed_lines[0].startswith("**Minute 200:**")  # newest first
     assert any(line.startswith("**Minute 198:** Etch Tool 1 (T-01) temperature") and "(INC-0008)" in line
                for line in feed_lines)
+
+
+def test_status_look_is_one_color_and_icon_per_state():
+    assert explain.state_of("low", "open") == "watch" and explain.state_of("medium", "acknowledged") == "alert"
+    assert explain.state_of("high", "hold_confirmed") == "urgent" and explain.state_of("high", "expired") == "closed"
+    assert explain.state_of(None) == "healthy"
+    assert explain.badge("urgent") == "🔴 :red[**Urgent**]" and explain.icon_label("closed") == "⚪ Closed"
+    assert explain.LOOK["watch"][:3] == explain.LOOK["alert"][:3]  # amber for both
+
+
+def test_incident_summary_tells_the_story_in_one_line():
+    s = build_system(Path(tempfile.mkdtemp()) / "s.db", seed=42, llm=FakeClient("valid"),
+                     faults_after_warmup=demo_faults(DEFAULT_WARMUP_TICKS))
+
+    def summary(iid):
+        return explain.incident_summary(s.conn, s.conn.execute("SELECT * FROM incidents WHERE incident_id = ?",
+                                                               (iid,)).fetchone(), s.clock, s.config, explain.Names(s.conn))
+
+    s.advance(50)
+    assert summary("INC-0008") == ("Etch Tool 1's temperature has been running high for 10 minutes. "
+                                   "Waiting for Avery Lin to respond. 1 product batch may be affected.")
+    s.alert_action("INC-0008", "acknowledge", "P-01")
+    s.advance(54)
+    assert summary("INC-0008") == ("Etch Tool 1's temperature went above its allowed range. Avery Lin is on it. "
+                                   "2 product batches may be affected; holding them is recommended.")
+    s.alert_action("INC-0008", "confirm_hold", "P-01")
+    assert "Avery Lin put the affected product on hold. 2 product batches may be affected (2 on hold)." in summary("INC-0008")
+    s.conn.close()
+
+
+def test_technical_details_are_tucked_away(monkeypatch):
+    monkeypatch.setenv("FAB_MONITOR_LLM", "fake")
+    at = AppTest.from_file(APP, default_timeout=120)
+    at.run()
+    next(b for b in at.sidebar.button if b.label == "+50").click().run()
+    at.selectbox(key="incident_detail").set_value("INC-0008").run()
+    tech = [e for e in at.expander if e.label == "Technical details"]
+    assert tech and not any(e.proto.expanded for e in tech)  # collapsed
+    assert any(m.label == "Settings version" for e in tech for m in e.metric)
+    inner = " ".join(m.value for e in tech for m in e.markdown)
+    assert "DX-00004" in inner and "**M-0001**" in inner and "escalation level 0" in inner
+    assert any("##### Etch Tool 1's temperature has been running high" in m.value for m in at.markdown)
+    assert not at.exception

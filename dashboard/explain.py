@@ -60,6 +60,40 @@ DISMISS_REASONS = {"false_alarm": "False alarm", "duplicate": "Duplicate", "othe
 SENSOR_TYPES = {"temperature": "temperature", "pressure": "pressure", "rf_power": "RF power"}
 
 
+# ----- status colors and icons ----------------------------------------------------------
+# One look per state, used everywhere (cards, tables, incident detail, inboxes, chart):
+# green healthy, amber watch or alert, red urgent, gray closed.
+
+CLOSED_STATUSES = ("dismissed", "resolved", "expired")
+LOOK = {  # state: (Streamlit color name, hex for charts, icon, label)
+    "healthy": ("green", "#1f8a4c", "🟢", "Healthy"),
+    "watch": ("orange", "#c27c0e", "🟠", "Watch"),
+    "alert": ("orange", "#c27c0e", "🟠", "Alert"),
+    "urgent": ("red", "#c8323c", "🔴", "Urgent"),
+    "closed": ("gray", "#7a808c", "⚪", "Closed"),
+}
+_STATE_OF_SEVERITY = {"low": "watch", "medium": "alert", "high": "urgent"}
+
+
+def state_of(severity: str | None, status: str | None = None) -> str:
+    """'healthy', 'watch', 'alert', 'urgent' or 'closed'."""
+    if status in CLOSED_STATUSES:
+        return "closed"
+    return _STATE_OF_SEVERITY.get(severity or "", "healthy")
+
+
+def icon_label(state: str, label: str | None = None) -> str:
+    """Plain text, for tables and expander titles: '🟠 Alert'."""
+    _, _, icon, default = LOOK[state]
+    return f"{icon} {label or default}"
+
+
+def badge(state: str, label: str | None = None) -> str:
+    """Markdown: the icon and a colored label, '🟠 :orange[**Alert**]'."""
+    color, _, icon, default = LOOK[state]
+    return f"{icon} :{color}[**{label or default}**]"
+
+
 def rule(name: str, config: Config) -> str:
     """Plain label with the technical rule name kept in parentheses."""
     labels = {
@@ -224,11 +258,63 @@ def activity_feed(conn, clock: Clock, config: Config, limit: int = 60) -> list[t
     for a in repo.relearning_activations(conn):
         add(a["activated_at"], 0, f"{names.tool(a['tool_id'])} finished learning the new normal after its recipe change.")
     for d in repo.all_dead_letters(conn):
-        add(d["ts"], 0, f"Rejected bad data from the {d['source'] or 'unknown'} feed ({d['id']}): {d['error_reason']}. "
-                        "Monitoring kept going.")
+        add(d["ts"], 0, f"Rejected bad data from the {d['source'] or 'unknown'} feed ({d['id']}): it failed the "
+                        "format check, so it was set aside. Monitoring kept going.")
     for e in repo.events_of_type(conn, "person_availability"):
         p = json.loads(e["payload"])
         add(e["ts"], 0, f"{names.person(p['person_id'])} marked {'available' if p['available'] else 'unavailable'}.")
 
     events.sort(key=lambda x: (-x[0], -x[1]))
     return [(minute, text) for minute, _, text in events[:limit]]
+
+
+# ----- one-sentence incident summary ---------------------------------------------------
+
+def _minutes(n: int) -> str:
+    return f"{n} minute{'s' if n != 1 else ''}"
+
+
+def incident_summary(conn, inc, clock: Clock, config: Config, names: Names) -> str:
+    """What happened, who is on it, and what product is affected, in plain words.
+    Read-only: built from the incident row as it is."""
+    sid = inc["sensor_id"]
+    sensor = names.sensors[sid]
+    what = f"{names.tools.get(sensor['tool_id'], sensor['tool_id'])}'s {names.sensor_type(sid)}"
+    closed = inc["status"] in CLOSED_STATUSES
+    end_tick = clock.tick_of(inc["updated_at"]) if closed else clock.tick
+    since = _minutes(max(0, end_tick - clock.tick_of(inc["onset_ts"])))
+    side = _side(conn, sid, inc["opened_at"])
+    trend = {"above": "running high", "below": "running low"}.get(side, "running away from normal")
+    first = {
+        "sustained_run": f"{what} {'was' if closed else 'has been'} {trend} for {since}",
+        "beyond_spec": f"{what} went {'outside' if side == 'away from' else side} its allowed range",
+        "beyond_3sigma": f"{what} had a single unusual reading",
+        "dropout": f"{what} sensor stopped reporting",
+        "capability_degraded": f"{what}: the new recipe runs too close to the allowed limits",
+    }.get(inc["rule_fired"], f"{what}: {rule_short(inc['rule_fired'])}")
+
+    owner = names.people.get(inc["owner_id"], inc["owner_id"]) if inc["owner_id"] else None
+    who = {
+        "open": f"Waiting for {owner} to respond." if owner else "On the watch list; no one has been paged.",
+        "acknowledged": f"{owner or 'Someone'} is on it.",
+        "hold_confirmed": f"{owner or 'Someone'} put the affected product on hold.",
+        "dismissed": "It was dismissed.",
+        "resolved": "It was resolved.",
+        "expired": "It closed automatically: no further signs.",
+    }.get(inc["status"], "")
+
+    lots = repo.lots_by_ids(conn, json.loads(inc["lots_at_risk"] or "[]"))
+    held = sum(1 for l in lots if l["status"] == "held")
+    n = len(lots)
+    if not n:
+        product = "No product batches affected."
+    else:
+        product = f"{n} product batch{'es' if n != 1 else ''} {'were' if n != 1 else 'was'} flagged as at risk" if closed \
+            else f"{n} product batch{'es' if n != 1 else ''} may be affected"
+        if held:
+            product += f" ({held} on hold)."
+        elif inc["recommend_hold"] and not closed:
+            product += "; holding them is recommended."
+        else:
+            product += "."
+    return f"{first}. {who} {product}"

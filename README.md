@@ -85,6 +85,7 @@ Other scripts: `scripts/run_sim.py` (one scenario, printed), `scripts/false_alar
 | `incidents.py`, `lots_at_risk.py`, `notifications.py` | Incident lifecycle, lots at risk, notifications/escalation/reassignment |
 | `orchestrator.py` | Routes every event; wires the running system |
 | `dashboard/app.py` | Streamlit dashboard (views and controls only) |
+| `dashboard/explain.py`, `.streamlit/config.toml` | Plain-language wording, status colors and one-line incident summaries; the page theme |
 | `eval.py` | Evaluation report |
 | `config.json`, `prompts/diagnosis_v2.txt` | Versioned config and prompt (v1 kept for earlier runs) |
 

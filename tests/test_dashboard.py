@@ -39,8 +39,8 @@ def system(app):
 
 
 def test_loads_demo_with_banner_and_config_version(at):
-    assert any("Simulated data" in e.value for e in at.error)
-    assert metric(at, "Simulated minute") == "150"  # warm-up done
+    assert any("Simulated data" in e.value for e in at.info)
+    assert metric(at, "Minute") == "150"  # warm-up done
     assert metric(at, "Settings version") == system(at).config.version
     faults = system(at).conn.execute("SELECT fault_type, sensor_id FROM fault_injections").fetchall()
     assert ("gradual_drift", "S-01-TEMP") in [tuple(r) for r in faults]
@@ -50,12 +50,12 @@ def test_advance_buttons(at):
     click(at, "+1", at.sidebar)
     click(at, "+10", at.sidebar)
     click(at, "+50", at.sidebar)
-    assert metric(at, "Simulated minute") == "211"
+    assert metric(at, "Minute") == "211"
 
 
 def test_malformed_event_is_quarantined(at):
     click(at, "Send bad data", at.sidebar)
-    assert metric(at, "Rejected bad data") == "1"
+    assert metric(at, "Bad data") == "1"
     assert any("Bad data rejected and set aside (dead letter)" in w.value for w in at.warning)
 
 
@@ -68,7 +68,7 @@ def test_recipe_change_starts_relearning(at):
 
 def test_inject_fault_writes_ground_truth(at):
     at.sidebar.selectbox(key="f_type").set_value("step_shift").run()
-    click(at, "Inject", at.sidebar)
+    click(at, "Start this problem", at.sidebar)
     rows = system(at).conn.execute("SELECT fault_type FROM fault_injections").fetchall()
     assert "step_shift" in [r[0] for r in rows]
 
@@ -121,8 +121,8 @@ def test_each_session_gets_its_own_database_and_never_shares_state(at):
     click(at, "+10", at.sidebar)
     click(at, "Send bad data", at.sidebar)
     other.run()
-    assert metric(at, "Simulated minute") == "160" and metric(at, "Rejected bad data") == "1"
-    assert metric(other, "Simulated minute") == "150" and metric(other, "Rejected bad data") == "0"
+    assert metric(at, "Minute") == "160" and metric(at, "Bad data") == "1"
+    assert metric(other, "Minute") == "150" and metric(other, "Bad data") == "0"
     assert other.session_state.system.conn.execute("SELECT COUNT(*) FROM dead_letter").fetchone()[0] == 0
 
 
@@ -130,7 +130,7 @@ def test_reloading_the_demo_replaces_this_sessions_database(at):
     old_dir = Path(at.session_state.db_dir)
     click(at, "+10", at.sidebar)
     click(at, "Load demo scenario", at.sidebar)
-    assert metric(at, "Simulated minute") == "150"
+    assert metric(at, "Minute") == "150"
     assert not old_dir.exists()
     assert Path(at.session_state.db_dir).exists()
 
@@ -155,7 +155,7 @@ def test_hosted_mode_from_env_uses_the_fake_and_never_reads_an_api_key(monkeypat
     app.run()
     assert not app.exception, app.exception
     assert any("Simulated data, scripted model responses" in e.value and "live model runs in the local version" in e.value
-               for e in app.error)
+               for e in app.info)
     assert isinstance(app.session_state.llm, FakeClient)
     assert "ANTHROPIC_API_KEY" not in looked_up
     assert any("hosted demo" in c.value for c in app.sidebar.caption)
@@ -168,12 +168,12 @@ def test_hosted_mode_from_streamlit_secret(monkeypatch):
     app.secrets["FAB_MONITOR_HOSTED"] = "true"
     app.run()
     assert not app.exception, app.exception
-    assert any("scripted model responses" in e.value for e in app.error)
+    assert any("scripted model responses" in e.value for e in app.info)
 
 
 def test_local_banner_is_unchanged(at):
-    assert any(e.value.startswith("**Simulated data.** Every tool, sensor, person, lot and reading") for e in at.error)
-    assert not any("scripted model responses" in e.value for e in at.error)
+    assert any(e.value.startswith("**Simulated data.** Every tool, sensor, person, lot and reading") for e in at.info)
+    assert not any("scripted model responses" in e.value for e in at.info)
 
 
 def tabs_position(app) -> int:

@@ -1,0 +1,21 @@
+# Presentation only: a light, neutral theme with one deep-blue accent.
+# Status colors (green/amber/red/gray) are used only to show status.
+[theme]
+base = "light"
+primaryColor = "#1d3f8f"
+backgroundColor = "#f6f7f9"
+secondaryBackgroundColor = "#eceff3"
+textColor = "#1f2430"
+borderColor = "#dde1e7"
+showSidebarBorder = true
+baseRadius = "0.5rem"
+greenColor = "#1f8a4c"
+orangeColor = "#c27c0e"
+redColor = "#c8323c"
+grayColor = "#7a808c"
+blueColor = "#1d3f8f"
+chartCategoricalColors = ["#1d3f8f", "#5b7fc7", "#9bb3e0", "#7a808c"]
+
+[theme.sidebar]
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f1f3f6"
