@@ -164,8 +164,8 @@ def run_scenario(system: System, scenario: Scenario) -> Outcome:
     names = Names(conn)
     for r in repo.all_incidents(conn):
         old = before.get(r["incident_id"])
-        if old == (r["severity"], r["rule_fired"], r["owner_id"]):
-            continue
+        if old is not None and old[:2] == (r["severity"], r["rule_fired"]):
+            continue  # unchanged, or only a new owner (the notes already say who it went to)
         if r["sensor_id"] != scenario.sensor_id:
             out.elsewhere += 1
             continue
