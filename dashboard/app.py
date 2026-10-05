@@ -34,6 +34,7 @@ from state.baseline import relearning_windows  # noqa: E402
 
 from dashboard import explain  # noqa: E402
 from dashboard.explain import Names  # noqa: E402
+from dashboard.scenarios import SCENARIOS, run_scenario  # noqa: E402
 
 # Chart colors from the theme (.streamlit/config.toml): deep blue for readings, a light tint of it
 # for the normal range, near-black for the allowed range. Status colors come from explain.LOOK.
@@ -138,7 +139,18 @@ names = Names(conn)
 # ----- sidebar: controls ---------------------------------------------------------
 
 with st.sidebar:
-    st.subheader("Run the simulation")
+    # Where things stand, and what to press next.
+    with st.container(border=True):
+        outage = st.session_state.get("kill_llm", False)
+        open_alerts = len(repo.incidents_by_tier(conn, actionable=True, active_only=True))
+        st.markdown(f"**Minute {clock.tick}** · AI {'off (outage)' if outage else 'on'} · "
+                    f"{open_alerts} open alert{'s' if open_alerts != 1 else ''}")
+        st.caption("New here? Press **+50** to watch the demo's temperature drift get caught at minute 198, "
+                   "then try a scenario." if clock.tick < 198 else
+                   "Try a scenario below, or **Load demo scenario** to start over.")
+
+    st.subheader("1 · Run the simulation", anchor=False,
+                 help="Time only moves when you press a button. One minute = every sensor reports once.")
     if st.button("Load demo scenario", width="stretch",
                  help="Start over with the demo: a slow temperature drift on T-01 that begins at minute 180. "
                       "Also turns the AI outage off."):
@@ -166,18 +178,30 @@ with st.sidebar:
     st.caption(f"AI: {'off (simulated outage)' if killed else st.session_state.llm_label}")
 
     st.divider()
-    st.subheader("Cause a problem")
-    st.markdown("**Break a sensor**")
+    st.subheader("2 · Try a scenario", anchor=False,
+                 help="Each button sets up a situation, moves time forward, then tells you what happened and "
+                      "where to look. Scenarios add to what's already running; Load demo scenario starts over.")
+    for sc in SCENARIOS:
+        if st.button(sc.label, key=f"scenario_{sc.key}", width="stretch", help=f"{sc.help} Afterwards: {sc.look}"):
+            outcome = run_scenario(system, sc)
+            flash("error" if outcome.error else "info", outcome.text())
+            st.rerun()
+
+    st.divider()
+    st.subheader("3 · Do it yourself", anchor=False,
+                 help="The same building blocks the scenarios use, one at a time. Move time forward afterwards "
+                      "to see the result.")
     tools = [t.tool_id for t in system.world.tools]
-    f_tool = st.selectbox("Machine", tools, key="f_tool", format_func=names.tool,
+    break_sensor = st.expander("Break a sensor")
+    f_tool = break_sensor.selectbox("Machine", tools, key="f_tool", format_func=names.tool,
                           help="The machine (tool) to cause a problem on.")
-    f_sensor = st.selectbox("Sensor", [s.sensor_id for s in system.world.sensors if s.tool_id == f_tool], key="f_sensor",
+    f_sensor = break_sensor.selectbox("Sensor", [s.sensor_id for s in system.world.sensors if s.tool_id == f_tool], key="f_sensor",
                             format_func=lambda sid: f"{names.sensor_type(sid)} ({sid})",
                             help="Which of the machine's sensors gets the problem.")
-    f_type = st.selectbox("Kind of problem", LIVE_FAULT_TYPES, key="f_type",
+    f_type = break_sensor.selectbox("Kind of problem", LIVE_FAULT_TYPES, key="f_type",
                           format_func=lambda f: explain.FAULT_TYPES.get(f, f),
                           help="The kind of problem to simulate (fault type); it starts within a minute or two.")
-    if st.button("Start this problem", width="stretch",
+    if break_sensor.button("Start this problem", width="stretch",
                  help="Start this simulated problem (inject a fault) so you can watch the system catch it."):
         try:
             fid = system.inject(f_type, f_sensor)
@@ -220,7 +244,8 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.subheader("People")
+    st.subheader("4 · People", anchor=False,
+                 help="Who gets alerted. Marking someone unavailable passes their unanswered alerts on.")
     people = repo.people(conn)
     p_id = st.selectbox("Person", [p["person_id"] for p in people],
                         format_func=lambda pid: next(f"{p['name']} ({pid}): {'available' if p['available'] else 'unavailable'}"

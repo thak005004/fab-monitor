@@ -38,7 +38,7 @@ The tests never call the real API (they use a scripted fake client). The whole s
 .venv/bin/streamlit run dashboard/app.py
 ```
 
-It opens on a demo scenario: a drift on T-01's temperature right after a planted maintenance entry, a noisy-but-healthy sensor, and two fault-free tools for a live recipe change. From the sidebar you can advance time, inject faults, change a recipe, mark people unavailable, send a malformed event, and kill the LLM. The page shows the tools, sensor charts with control/spec limits and relearning bands, notified incidents and the low-severity watch list, incident detail with each verified citation, per-person inboxes, and the dead-letter queue.
+It opens on a demo scenario: a drift on T-01's temperature right after a planted maintenance entry, a noisy-but-healthy sensor, and two fault-free tools for a live recipe change. From the sidebar you can advance time, run one-click test scenarios (sudden jump, sensor dropout, decoy maintenance notes, prompt injection, no-cause drift, recipe change with an out-of-spec reading, someone calling out, a burst of bad data), inject faults, change a recipe, mark people unavailable, send a malformed event, and kill the LLM. The page shows the tools, sensor charts with control/spec limits and relearning bands, notified incidents and the low-severity watch list, incident detail with each verified citation, per-person inboxes, and the dead-letter queue.
 
 Diagnoses use Claude when `ANTHROPIC_API_KEY` is set, and the scripted fake client otherwise. Set `FAB_MONITOR_LLM=fake` to force the fake. The key is read only from the environment and never stored or printed.
 
@@ -109,6 +109,7 @@ Three standalone checks. Each one only reads an existing database or writes a ne
 | `incidents.py`, `lots_at_risk.py`, `notifications.py` | Incident lifecycle, lots at risk, notifications/escalation/reassignment |
 | `orchestrator.py` | Routes every event; wires the running system |
 | `dashboard/app.py` | Streamlit dashboard (views and controls only) |
+| `dashboard/scenarios.py` | One-click test scenarios for the sidebar (built only from existing actions) |
 | `dashboard/explain.py`, `.streamlit/config.toml` | Plain-language wording, status colors and one-line incident summaries; the page theme |
 | `eval.py` | Evaluation report |
 | `scripts/replay_events.py`, `scripts/integrity_audit.py`, `scripts/index_benchmark.py` | Database checks (see Database) |

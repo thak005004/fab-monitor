@@ -13,7 +13,7 @@ cd ~/fab-monitor
 
 The dashboard uses Claude if `ANTHROPIC_API_KEY` is set, otherwise scripted responses; the sidebar's "AI:" line says which. Time is simulated: one step (tick) is one minute, shown as **Minute**. Every label shows its technical term in parentheses or on hover. Raw IDs that the story doesn't need (diagnosis IDs, evidence record IDs, escalation levels, the settings version, raw rejected data) are in collapsed **Technical details** sections; open them when a step below points there.
 
-Status colors are the same everywhere: 🟢 healthy, 🟠 watch or alert, 🔴 urgent, ⚪ closed. The sidebar has three groups: **Run the simulation**, **Cause a problem** and **People**. Every sidebar action confirms itself with a short pop-up in the corner of the screen, so you can see it worked even when the sidebar covers the page. **Load demo scenario** also turns the AI outage off.
+Status colors are the same everywhere: 🟢 healthy, 🟠 watch or alert, 🔴 urgent, ⚪ closed. The sidebar opens with a status line (minute, AI on or off, open alerts) and four numbered sections: **1 · Run the simulation**, **2 · Try a scenario**, **3 · Do it yourself** and **4 · People**. Every sidebar action confirms itself with a short pop-up in the corner of the screen, so you can see it worked even when the sidebar covers the page. **Load demo scenario** also turns the AI outage off.
 
 ## 1. Open the page (demo scenario loads)
 
@@ -57,7 +57,7 @@ In the INC-0008 details, **Acting as** shows **Avery Lin (P-01)**. Press **Ackno
 
 ## 4. Live recipe change on T-05
 
-In the sidebar under **Cause a problem → Switch a recipe**: Machine **Etch Tool 5 (T-05)**, New recipe name **R-05-B** (the defaults). Press **Change recipe**.
+In the sidebar under **3 · Do it yourself → Switch a recipe**: Machine **Etch Tool 5 (T-05)**, New recipe name **R-05-B** (the defaults). Press **Change recipe**.
 
 **You see:**
 - "Etch Tool 5 (T-05) switched to recipe R-05-B: its sensors are learning the new normal (relearning)."
@@ -68,7 +68,7 @@ In the sidebar under **Cause a problem → Switch a recipe**: Machine **Etch Too
 
 ## 5. Send bad data
 
-Press **Send bad data** (sidebar, *Cause a problem → Garble a message*).
+Press **Send bad data** (sidebar, *3 · Do it yourself → Garble a message*).
 
 **You see:**
 - "Bad data rejected and set aside (dead letter); monitoring kept going."
@@ -108,6 +108,21 @@ On INC-0008, press **Confirm hold** (acting as Avery Lin (P-01)).
 - Etch Tool 5's card: **T-05 · monitoring** again. On the S-05-TEMP chart, the grey band runs **exactly from minute 200 to minute 320**, the real length of that learning period. The Activity tab says T-05 finished learning the new normal at minute 320.
 - No incident on T-05 during relearning. Between minutes 320 and 404, three watch-list items opened and closed automatically on T-05 against the new normal: INC-0012 S-05-PRES (opened at 337), INC-0014 S-05-RF (339) and INC-0015 S-05-RF (367). Nobody was paged. By minute 404 they have closed, so the watch list no longer shows them and T-05's card reads **🟢 Healthy** (they're still in the Activity tab).
 - INC-0008's product batches at risk keep growing as new batches start on T-01: LOT-0043, LOT-0049, LOT-0052 and LOT-0058 are marked at risk. Only the two batches at risk when the hold was confirmed are on hold. A person would confirm the newer ones separately.
+
+## After the demo: one-click scenarios
+
+These aren't part of the timed demo above (they add to whatever is running, so the minutes and IDs above no longer apply once you press one; **Load demo scenario** starts over). Each one sets up a situation, moves time forward, and pops up what happened and where to look:
+
+| Scenario | What it sets up | Where to look |
+|---|---|---|
+| Sudden jump | T-03 pressure jumps 2σ (inside the allowed range); 30 minutes | Incidents: caught as a sustained shift |
+| Sensor goes silent | T-02 RF power stops reporting; 12 minutes | Incidents: "Sensor stopped reporting", no batches marked |
+| Misleading maintenance notes | Drift on T-03 temperature, real cause plus three decoy notes; 60 minutes | Incident details: the AI cites the real note, not the decoys |
+| Note that tries to trick the AI | Drift on T-02 pressure; its note contains instructions aimed at the AI; 40 minutes | Incident details: the alert goes out and the note is treated as data |
+| Drift with no known cause | Drift on T-04 pressure with nothing in the records; 40 minutes | Incident details: the AI abstains instead of guessing |
+| Recipe change + bad reading | T-05 switches recipe, one reading leaves the allowed range while it relearns; 15 minutes | Incidents: an Urgent alert even while learning |
+| Someone calls out mid-alert | The owner of an unanswered alert becomes unavailable (starts a problem first if there's none) | Inboxes: the "reassigned" notice |
+| Burst of bad data | Four garbled records of different kinds | Rejected bad data: each with its reason |
 
 ## With the real model
 

@@ -9,6 +9,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from agents.diagnosis.client import FailingClient
+from dashboard.scenarios import SCENARIOS
 from sim.faults import LIVE_FAULT_TYPES
 
 APP = str(Path(__file__).resolve().parents[1] / "dashboard" / "app.py")
@@ -42,8 +43,8 @@ def conn(app):
 
 def test_every_sidebar_button_and_control_is_covered(at):
     assert [b.label for b in at.sidebar.button] == [
-        "Load demo scenario", "+1", "+10", "+50", "Start this problem", "Change recipe", "Send bad data",
-        "Mark unavailable"]
+        "Load demo scenario", "+1", "+10", "+50", *(sc.label for sc in SCENARIOS),
+        "Start this problem", "Change recipe", "Send bad data", "Mark unavailable"]
     assert [t.key for t in at.sidebar.toggle] == ["kill_llm"]
     assert [s.key for s in at.sidebar.selectbox] == ["f_tool", "f_sensor", "f_type", "r_tool", "p_id"]
     assert [t.key for t in at.sidebar.text_input] == ["r_recipe"]
@@ -153,3 +154,78 @@ def test_mark_unavailable_with_no_alerts_says_so(at):
     at.sidebar.selectbox(key="p_id").set_value("P-06").run()
     click(at, "Mark unavailable")
     assert toasts(at)[0].endswith("They had no unanswered alerts to pass on.")
+
+
+def test_status_box_shows_minute_ai_and_open_alerts(at):
+    first = at.sidebar.markdown[0].value
+    assert first == "**Minute 150** · AI on · 0 open alerts"
+    assert any("Press **+50**" in c.value for c in at.sidebar.caption)
+    click(at, "+50")
+    assert at.sidebar.markdown[0].value == "**Minute 200** · AI on · 2 open alerts"
+    at.sidebar.toggle(key="kill_llm").set_value(True).run()
+    assert "AI off (outage)" in at.sidebar.markdown[0].value
+
+
+# What each scenario must show on the sensor it's about, run from the demo's start (minute 150).
+SCENARIO_EXPECTS = {
+    "sudden_jump": ("S-03-PRES", "sustained_run", None),
+    "sensor_silent": ("S-02-RF", "dropout", None),
+    "misleading_notes": ("S-03-TEMP", "sustained_run", "diagnosed"),
+    "trick_note": ("S-02-PRES", "sustained_run", "diagnosed"),
+    "no_cause": ("S-04-PRES", "sustained_run", "abstained"),
+    "recipe_bad_reading": ("S-05-TEMP", "beyond_spec", None),
+}
+
+
+@pytest.mark.parametrize("key", list(SCENARIO_EXPECTS))
+def test_each_fault_scenario_produces_its_incident_and_reports_it(at, key):
+    sensor, rule, dx_status = SCENARIO_EXPECTS[key]
+    sc = next(s for s in SCENARIOS if s.key == key)
+    start = minute(at)
+    click(at, sc.label)
+    assert not at.exception
+    inc = conn(at).execute("SELECT * FROM incidents WHERE sensor_id = ? AND rule_fired = ? ORDER BY opened_at DESC",
+                           (sensor, rule)).fetchone()
+    assert inc is not None, f"{key}: no {rule} incident on {sensor}"
+    report = toasts(at)[0]
+    assert report.startswith(f"**{sc.label}**: minute {start} → {minute(at)}.")
+    assert inc["incident_id"] in report and f"Look at: {sc.look}" in report
+    assert any(inc["incident_id"] in i.value for i in at.info)  # also in the box above the tabs
+    if dx_status:
+        dx = conn(at).execute("SELECT status, cited_evidence FROM diagnoses WHERE incident_id = ? ORDER BY diagnosis_id",
+                              (inc["incident_id"],)).fetchone()
+        assert dx["status"] == dx_status
+        if key == "misleading_notes":  # cites the real cause, never a decoy
+            planted = conn(at).execute("SELECT planted_cause_id, expected_outcome FROM fault_injections "
+                                       "WHERE fault_type = 'drift_with_decoys'").fetchone()
+            assert dx["cited_evidence"] == f'["{planted["planted_cause_id"]}"]'
+            assert planted["planted_cause_id"] not in planted["expected_outcome"].split("decoys:")[1]
+
+
+def test_someone_calls_out_scenario_reassigns_an_unanswered_alert(at):
+    click(at, "Someone calls out mid-alert")
+    reassigned = conn(at).execute("SELECT incident_id, person_id FROM notifications WHERE reason = 'reassigned'").fetchall()
+    assert len(reassigned) == 1
+    unavailable = [r[0] for r in conn(at).execute("SELECT person_id FROM people WHERE available = 0")]
+    assert len(unavailable) == 1 and reassigned[0]["person_id"] != unavailable[0]
+    assert "marked unavailable while owning " + reassigned[0]["incident_id"] in toasts(at)[0]
+
+
+def test_bad_data_burst_scenario_rejects_four_kinds(at):
+    click(at, "Burst of bad data")
+    reasons = [r[0] for r in conn(at).execute("SELECT error_reason FROM dead_letter ORDER BY id")]
+    assert len(reasons) == 4
+    assert any("valid number" in r for r in reasons) and any("unknown sensor_id" in r for r in reasons)
+    assert any("Field required" in r for r in reasons) and any("unknown tool_id" in r for r in reasons)
+    assert conn(at).execute("SELECT COUNT(*) FROM events").fetchone()[0] > 0
+    assert "4 garbled records sent; 4 rejected" in toasts(at)[0]
+
+
+def test_scenarios_combine_and_load_demo_starts_over(at):
+    fresh = conn(at).execute("SELECT COUNT(*) FROM fault_injections").fetchone()[0]
+    click(at, "Sudden jump")
+    click(at, "Sensor goes silent")
+    assert minute(at) == 150 + 30 + 12
+    click(at, "Load demo scenario")
+    assert minute(at) == 150
+    assert conn(at).execute("SELECT COUNT(*) FROM fault_injections").fetchone()[0] == fresh  # the demo's own faults only
