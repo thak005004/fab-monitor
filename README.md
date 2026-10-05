@@ -72,6 +72,28 @@ read -s ANTHROPIC_API_KEY && export ANTHROPIC_API_KEY
 
 Other scripts: `scripts/run_sim.py` (one scenario, printed), `scripts/false_alarm_rate.py`, `scripts/rolling_vs_frozen.py`, and `scripts/demo_walkthrough.py` (the demo, headless).
 
+## Database
+
+One SQLite file (WAL mode, foreign keys on); the schema is `db/schema.sql`. The tables fall into five groups:
+
+- **Reference data:** `tools`, `sensors` (with fixed spec limits), `people`, `tool_qualifications`. Seeded once and never changed by events, except a person's availability.
+- **Live state:** `tool_state`, `sensor_state`. Current values, updated by merge only.
+- **Append-only history:** `events` (every accepted event, in order), `readings`, `maintenance_log`, `recipe_changes`, `baseline_windows`, `logged_firings`, and `dead_letter` (rejected records). `lots` holds the manufacturing context: the seeded schedule, whose status changes to at risk or held.
+- **Outputs and audit:** `incidents`, `diagnoses` (with the exact evidence bundle and raw model responses), `notifications`, `config_versions`.
+- **Ground truth:** `fault_injections`. Written only by the simulator and read only by evaluation, never by the system under test.
+
+Three standalone checks. Each one only reads an existing database or writes a new temporary one. Results are in `eval_results/database_report.md`.
+
+```
+.venv/bin/python scripts/replay_events.py              # rebuild state from the event log; compare 6 derived tables
+.venv/bin/python scripts/integrity_audit.py --demo     # or --long 10000, or --db path/to/sim.db
+.venv/bin/python scripts/index_benchmark.py            # (sensor_id, ts) index on vs off, 150,000 readings
+```
+
+- **Replay:** feeding a fresh database only the logged events reproduces `tool_state`, `sensor_state`, `baseline_windows`, `incidents`, `notifications` and `lots` exactly.
+- **Integrity audit:** six checks: unknown references, unnotified medium/high incidents, citations outside a diagnosis's own bundle, held lots without a confirmed hold, orphan notifications, and status histories that break the allowed transitions. It found zero violations on the demo scenario and on a 10,000-tick run.
+- **Index benchmark:** the per-reading "latest readings" query takes about 0.04 ms with the index and about 23–26 ms without it.
+
 ## Layout
 
 | Path | What |
@@ -87,6 +109,7 @@ Other scripts: `scripts/run_sim.py` (one scenario, printed), `scripts/false_alar
 | `dashboard/app.py` | Streamlit dashboard (views and controls only) |
 | `dashboard/explain.py`, `.streamlit/config.toml` | Plain-language wording, status colors and one-line incident summaries; the page theme |
 | `eval.py` | Evaluation report |
+| `scripts/replay_events.py`, `scripts/integrity_audit.py`, `scripts/index_benchmark.py` | Database checks (see Database) |
 | `config.json`, `prompts/diagnosis_v2.txt` | Versioned config and prompt (v1 kept for earlier runs) |
 
 Notifications go to a per-person inbox on the dashboard. A real deployment would add a webhook (Slack, email or paging) in `notifications.py`, at `_insert()`, where each notification is written.
