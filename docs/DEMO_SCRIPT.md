@@ -35,7 +35,7 @@ The demo loads by itself, and **Load demo scenario** resets to the same state at
   - **Sustained shift: 9 readings in a row on one side of normal (sustained_run)** · level **Alert** · status **Waiting for response (open)**.
   - Started around minute **190** (onset), detected at minute **198**, owner **Avery Lin (P-01)**.
   - **Product batches (lots) at risk:** LOT-0030 (at risk). No hold is recommended yet (it's only an Alert).
-  - **AI diagnosis DX-00004: ✅ AI suggested likely causes (diagnosed)**. The evidence it cites, **M-0001**, shows "✓ checked against the records (verified)", with its maintenance text.
+  - **AI diagnosis DX-00004: ✅ AI suggested likely causes (diagnosed)**. On the hosted copy (scripted responses), it also shows "AI revised its answer after the checker rejected it": the scripted first answer cites a made-up record, M-9999, the checker rejects it, and the revised answer cites M-0001. Both attempts are shown. The evidence it cites, **M-0001**, shows "✓ checked against the records (verified)", with its maintenance text.
 - **Inboxes** tab → Avery Lin (P-01): a **new alert** at minute 198, escalation level 0.
 - **Sensor chart** (Etch Tool 1 (T-01) temperature (S-01-TEMP)): readings climbing toward the dashed **normal range** line, the red **allowed range** lines, and an orange "problem detected" marker at minute 198.
 

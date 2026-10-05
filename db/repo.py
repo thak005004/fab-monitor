@@ -386,14 +386,16 @@ def insert_diagnosis(
     conn, diagnosis_id: str, incident_id: str, status: str, likely_factors_json: str | None,
     cited_evidence_json: str | None, confidence: str | None, rejection_reason: str | None,
     evidence_bundle_json: str, raw_response_json: str | None, prompt_version: str, model: str | None,
-    created_at: str,
+    created_at: str, first_attempt_json: str | None = None, correction_attempts: int = 0,
 ) -> None:
     conn.execute(
         "INSERT INTO diagnoses (diagnosis_id, incident_id, status, likely_factors, cited_evidence, confidence,"
-        " rejection_reason, evidence_bundle, raw_response, prompt_version, model, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " rejection_reason, evidence_bundle, raw_response, prompt_version, model, created_at,"
+        " first_attempt, correction_attempts)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (diagnosis_id, incident_id, status, likely_factors_json, cited_evidence_json, confidence,
-         rejection_reason, evidence_bundle_json, raw_response_json, prompt_version, model, created_at),
+         rejection_reason, evidence_bundle_json, raw_response_json, prompt_version, model, created_at,
+         first_attempt_json, correction_attempts),
     )
 
 
@@ -402,9 +404,11 @@ def count_diagnoses(conn) -> int:
 
 
 def count_llm_calls_at(conn, ts: str) -> int:
-    """Diagnoses this tick that called the LLM (rate-limited rows have no model)."""
+    """LLM calls charged to this tick: one per diagnosis that called the model, plus
+    its self-correction attempt if any (rate-limited rows have no model)."""
     return conn.execute(
-        "SELECT COUNT(*) FROM diagnoses WHERE created_at = ? AND model IS NOT NULL", (ts,)
+        "SELECT COALESCE(SUM(1 + correction_attempts), 0) FROM diagnoses WHERE created_at = ? AND model IS NOT NULL",
+        (ts,),
     ).fetchone()[0]
 
 

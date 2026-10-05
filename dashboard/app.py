@@ -72,7 +72,9 @@ def make_llm():
     Local: Claude if a key is available (or FAB_MONITOR_LLM=anthropic), else the
     scripted fake. FAB_MONITOR_LLM=fake forces the fake (used by the tests)."""
     if hosted_mode():
-        return FakeClient("valid"), "scripted responses (hosted demo)"
+        # Scripted so the self-correction can be seen: when there is a maintenance record
+        # to cite, the first answer cites a made-up one and the checker sends it back.
+        return FakeClient("self_correct_demo"), "scripted responses (hosted demo)"
     choice = os.environ.get("FAB_MONITOR_LLM") or ("anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "fake")
     if choice == "anthropic":
         model = load_config().diagnosis_model
@@ -418,6 +420,21 @@ with tab_inc:
             st.caption(f"AI model: {model} · confidence: {dx['confidence'] or '-'}")
             if dx["rejection_reason"]:
                 st.caption(f"Reason: {dx['rejection_reason']}")
+            first = json.loads(dx["first_attempt"]) if dx["first_attempt"] else None
+            if first:  # one self-correction was tried: show both attempts
+                revised_ok = status in ("diagnosed", "abstained")
+                note = ("AI revised its answer after the checker rejected it." if revised_ok
+                        else "AI tried once to revise its answer, but the checker rejected it again.")
+                if hosted_mode() and dx["model"] == "fake":
+                    note += " (Scripted demo: the first answer deliberately cites a made-up record.)"
+                (st.info if revised_ok else st.warning)(note)
+                st.markdown(
+                    f"**First answer (rejected):** cited {', '.join(first['cited_evidence']) or 'nothing'}"
+                    + (f" · suggested: {'; '.join(first['likely_factors'])}" if first["likely_factors"] else "")
+                    + f"  \n*Why the checker rejected it:* {first['reason']}")
+                st.markdown(f"**Revised answer:** {explain.DIAGNOSIS[status]} ({status})"
+                            + (f", citing {', '.join(json.loads(dx['cited_evidence'] or '[]'))}"
+                               if json.loads(dx["cited_evidence"] or "[]") else ""))
             factors = json.loads(dx["likely_factors"] or "[]")
             if factors and status == "diagnosed":
                 st.markdown("**Likely contributing factors:**\n" + "\n".join(f"- {f}" for f in factors))

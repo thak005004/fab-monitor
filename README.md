@@ -86,7 +86,7 @@ Other scripts: `scripts/run_sim.py` (one scenario, printed), `scripts/false_alar
 | `orchestrator.py` | Routes every event; wires the running system |
 | `dashboard/app.py` | Streamlit dashboard (views and controls only) |
 | `eval.py` | Evaluation report |
-| `config.json`, `prompts/diagnosis_v1.txt` | Versioned config and prompt |
+| `config.json`, `prompts/diagnosis_v2.txt` | Versioned config and prompt (v1 kept for earlier runs) |
 
 Notifications go to a per-person inbox on the dashboard. A real deployment would add a webhook (Slack, email or paging) in `notifications.py`, at `_insert()`, where each notification is written.
 

@@ -46,7 +46,10 @@ class LLMReply:
 class LLMClient(Protocol):
     name: str  # the model requested; recorded when no model answered (timeout, error)
 
-    def complete(self, system: str, user: str, timeout_s: float) -> LLMReply: ...
+    def complete(self, system: str, user: str, timeout_s: float, history: list[dict] | None = None) -> LLMReply:
+        """history: earlier turns of this conversation ({"role", "content"} dicts), sent
+        before `user`. Used only for the one self-correction request."""
+        ...
 
 
 class AnthropicClient:
@@ -73,7 +76,7 @@ class AnthropicClient:
         self.model = model
         self.name = model
 
-    def complete(self, system: str, user: str, timeout_s: float) -> LLMReply:
+    def complete(self, system: str, user: str, timeout_s: float, history: list[dict] | None = None) -> LLMReply:
         a = self._anthropic
         try:
             # No refusal fallback: a declined request is recorded as unavailable,
@@ -82,7 +85,7 @@ class AnthropicClient:
                 model=self.model,
                 max_tokens=self.MAX_TOKENS,
                 system=system,
-                messages=[{"role": "user", "content": user}],
+                messages=[*(history or []), {"role": "user", "content": user}],
                 output_config={"effort": self.EFFORT, "format": {"type": "json_schema", "schema": OUTPUT_JSON_SCHEMA}},
                 timeout=timeout_s,
             )
@@ -113,7 +116,7 @@ class FailingClient:
     def __init__(self, reason: str = "LLM disabled (kill switch)") -> None:
         self.reason = reason
 
-    def complete(self, system: str, user: str, timeout_s: float) -> LLMReply:
+    def complete(self, system: str, user: str, timeout_s: float, history: list[dict] | None = None) -> LLMReply:
         raise LLMUnavailable(self.reason)
 
 
@@ -157,13 +160,26 @@ def _timeout(user: str) -> str:
     raise LLMTimeout("scripted timeout")
 
 
+def _self_correct_demo(user: str, correction: bool = False) -> str:
+    """Hosted-demo script. When the evidence has a maintenance entry to cite, the first
+    answer deliberately cites a made-up record (M-9999) so the checker rejects it, and
+    the correction is valid. With nothing to cite, it simply abstains."""
+    if correction:
+        return _valid(user)
+    if _evidence(user).get("maintenance"):
+        return _fabricated(user)
+    return _abstain(user)
+
+
 SCRIPTS: dict[str, Callable[[str], str]] = {
     "valid": _valid,
     "abstain": _abstain,
     "malformed": _malformed,
     "fabricated": _fabricated,
     "timeout": _timeout,
+    "self_correct_demo": _self_correct_demo,
 }
+CORRECTION_AWARE = {"self_correct_demo"}
 
 
 class FakeClient:
@@ -176,8 +192,14 @@ class FakeClient:
     def __init__(self, script: str | list[str] = "valid") -> None:
         self.script = [script] if isinstance(script, str) else list(script)
         self.calls: list[tuple[str, str]] = []
+        self.histories: list[list[dict] | None] = []
 
-    def complete(self, system: str, user: str, timeout_s: float) -> LLMReply:
+    def complete(self, system: str, user: str, timeout_s: float, history: list[dict] | None = None) -> LLMReply:
         step = self.script[min(len(self.calls), len(self.script) - 1)]
         self.calls.append((system, user))
-        return LLMReply(SCRIPTS[step](user) if step in SCRIPTS else step, self.name)
+        self.histories.append(history)
+        # The evidence is in the first user turn; a correction turn carries it in history.
+        evidence_text = history[0]["content"] if history else user
+        if step in CORRECTION_AWARE:
+            return LLMReply(SCRIPTS[step](evidence_text, correction=bool(history)), self.name)
+        return LLMReply(SCRIPTS[step](evidence_text) if step in SCRIPTS else step, self.name)

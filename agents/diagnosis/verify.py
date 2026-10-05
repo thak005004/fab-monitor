@@ -12,21 +12,28 @@ from sim.clock import Clock
 
 
 def verify(output: dict, bundle: dict, clock: Clock, config: Config) -> str | None:
-    """Returns None if the diagnosis passes, else the rejection reason."""
+    """Returns None if the diagnosis passes, else the rejection reason(s), joined."""
+    problems = all_problems(output, bundle, clock, config)
+    return "; ".join(problems) if problems else None
+
+
+def all_problems(output: dict, bundle: dict, clock: Clock, config: Config) -> list[str]:
+    """Every reason the diagnosis fails verification (empty if it passes). Used for
+    the rejection reason and for the one self-correction request."""
+    problems = []
     factors, cited = output["likely_factors"], output["cited_evidence"]
     if output["status"] == "diagnosed":
         if not factors:
-            return "diagnosed with no likely contributing factors"
+            problems.append("diagnosed with no likely contributing factors")
         if not cited:
-            return "diagnosed with no cited evidence"
+            problems.append("diagnosed with no cited evidence")
     elif factors:
-        return "abstained but listed likely contributing factors"
-
+        problems.append("abstained but listed likely contributing factors")
     for cid in cited:
         problem = check_citation(cid, bundle, clock, config)
         if problem:
-            return problem
-    return None
+            problems.append(problem)
+    return problems
 
 
 def check_citation(cid: str, bundle: dict, clock: Clock, config: Config) -> str | None:

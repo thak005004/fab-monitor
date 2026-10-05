@@ -128,6 +128,8 @@ CREATE TABLE diagnoses (
   rejection_reason TEXT,             -- why: set when status = rejected or unavailable
   evidence_bundle TEXT NOT NULL,     -- JSON: exactly what the model saw
   raw_response TEXT,                 -- JSON list of every raw model response in this run (2 if retried)
+  first_attempt TEXT,                -- JSON: the rejected first answer and its reasons, if a self-correction was tried
+  correction_attempts INTEGER NOT NULL DEFAULT 0,  -- 0 or 1 (never more than one self-correction)
   prompt_version TEXT NOT NULL,
   model TEXT,
   created_at TEXT NOT NULL

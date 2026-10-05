@@ -51,7 +51,7 @@ def test_valid_response_with_real_citations_is_diagnosed_and_stored(ctx):
     d = run(s, inc, client)
     assert d.status == "diagnosed" and d.cited_evidence == ["M-0901"]
     r = row(s, d)
-    assert r["status"] == "diagnosed" and r["model"] == "fake" and r["prompt_version"] == "diagnosis_v1"
+    assert r["status"] == "diagnosed" and r["model"] == "fake" and r["prompt_version"] == "diagnosis_v2"
     bundle = json.loads(r["evidence_bundle"])
     assert [m["id"] for m in bundle["maintenance"]] == ["M-0901"]  # per tool: T-02's entry isn't there
     assert bundle["readings"] and all(x["id"].startswith("RD-") for x in bundle["readings"])
@@ -204,3 +204,74 @@ def test_after_upgrade_to_beyond_spec_the_bundle_contains_the_out_of_spec_readin
     assert len(ids) <= s.config.max_evidence_readings and len(ids) == len(set(ids))
     # The onset window is still there too.
     assert any(r["ts"] <= inc["onset_ts"] for r in bundle["readings"])
+
+
+# ----- one bounded self-correction --------------------------------------------------
+
+def test_rejected_answer_corrected_on_retry(ctx):
+    s, inc = ctx
+    client = FakeClient(["fabricated", "valid"])
+    d = run(s, inc, client)
+    assert d.status == "diagnosed" and d.self_corrected and d.cited_evidence == ["M-0901"]
+    assert len(client.calls) == 2
+    # The follow-up is a second turn: the original question and the model's own answer come first.
+    history = client.histories[1]
+    assert [m["role"] for m in history] == ["user", "assistant"] and "M-9999" in history[1]["content"]
+    followup = client.calls[1][1]
+    assert "M-9999" in followup and "not in the evidence that was sent" in followup and "M-0901" in followup
+    r = row(s, d)
+    assert r["status"] == "diagnosed" and r["correction_attempts"] == 1 and r["rejection_reason"] is None
+    first = json.loads(r["first_attempt"])
+    assert first["status"] == "rejected" and first["cited_evidence"] == ["M-9999"] and "M-9999" in first["reason"]
+    assert len(json.loads(r["raw_response"])) == 2  # both replies kept
+
+
+def test_rejected_answer_that_fails_again_stays_rejected(ctx):
+    s, inc = ctx
+    client = FakeClient(["fabricated", raw(cited=["M-0902"])])  # correction cites another tool's entry
+    d = run(s, inc, client)
+    assert d.status == "rejected" and not d.self_corrected and "M-0902" in d.reason
+    r = row(s, d)
+    assert r["correction_attempts"] == 1 and "M-9999" in json.loads(r["first_attempt"])["reason"]
+
+
+def test_never_more_than_one_correction(ctx):
+    s, inc = ctx
+    client = FakeClient("fabricated")  # wrong every time
+    d = run(s, inc, client)
+    assert d.status == "rejected" and len(client.calls) == 2
+    assert row(s, d)["correction_attempts"] == 1
+
+
+def test_invalid_correction_keeps_the_rejection(ctx):
+    s, inc = ctx
+    d = run(s, inc, FakeClient(["fabricated", "malformed"]))
+    assert d.status == "rejected" and "self-correction was invalid" in d.reason and d.correction_attempts == 1
+
+
+def test_rate_limit_counts_correction_attempts(ctx):
+    s, _ = ctx
+    assert s.config.max_diagnoses_per_tick == 3
+    now = s.clock.now_iso()
+    for n, sid in enumerate(["S-02-TEMP", "S-03-TEMP", "S-05-TEMP"], start=2):
+        repo.insert_incident(s.conn, f"INC-T00{n}", s.world.sensor(sid).tool_id, sid, "sustained_run", "medium",
+                             now, now, s.config.version)
+    a, b, c = (dict(repo.get_incident(s.conn, f"INC-T00{n}")) for n in (2, 3, 4))
+    client = FakeClient(["fabricated", "valid", "fabricated", "valid"])
+    da = run(s, a, client)  # 2 calls: rejected, then corrected
+    db_ = run(s, b, client)  # 3rd call fills the budget, so no correction
+    dc = run(s, c, client)  # over the limit: not called at all
+    assert da.status == "diagnosed" and da.self_corrected
+    assert db_.status == "rejected" and "no self-correction: rate limited" in db_.reason and db_.correction_attempts == 0
+    assert dc.status == "unavailable" and dc.reason == "rate limited"
+    assert len(client.calls) == 3
+
+
+def test_hosted_demo_script_shows_one_correction_only_when_there_is_evidence_to_cite(ctx):
+    s, inc = ctx
+    d = run(s, inc, FakeClient("self_correct_demo"))  # T-01 has maintenance M-0901 in the evidence
+    assert d.status == "diagnosed" and d.self_corrected and d.first_attempt["cited_evidence"] == ["M-9999"]
+    now = s.clock.now_iso()
+    repo.insert_incident(s.conn, "INC-T009", "T-03", "S-03-TEMP", "sustained_run", "medium", now, now, s.config.version)
+    quiet = run(s, dict(repo.get_incident(s.conn, "INC-T009")), FakeClient("self_correct_demo"))  # nothing to cite
+    assert quiet.status == "abstained" and quiet.correction_attempts == 0

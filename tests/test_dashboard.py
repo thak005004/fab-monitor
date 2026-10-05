@@ -201,3 +201,17 @@ def test_action_buttons_keep_the_incidents_tab_and_the_selected_incident(at):
     assert any("acknowledged → hold_confirmed" in m.value for m in at.success)
     assert tabs_position(at) == position
     assert at.selectbox(key="incident_detail").value == "INC-0008"
+
+
+def test_hosted_demo_shows_the_scripted_self_correction(monkeypatch):
+    monkeypatch.setenv("FAB_MONITOR_HOSTED", "1")
+    app = AppTest.from_file(APP, default_timeout=120)
+    app.run()
+    next(b for b in app.sidebar.button if b.label == "+50").click().run()
+    app.selectbox(key="incident_detail").set_value("INC-0008").run()
+    assert not app.exception, app.exception
+    note = next(i.value for i in app.info if "AI revised its answer after the checker rejected it." in i.value)
+    assert "Scripted demo" in note
+    text = " ".join(m.value for m in app.markdown)
+    assert "First answer (rejected):** cited M-9999" in text and "not in the evidence that was sent" in text
+    assert "Revised answer:** AI suggested likely causes (diagnosed), citing M-0001" in text

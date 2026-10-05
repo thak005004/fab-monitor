@@ -27,6 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from agents.diagnosis.agent import PROMPT_VERSION  # noqa: E402
 from agents.diagnosis.client import AnthropicClient, FakeClient, LLMUnavailable, _evidence  # noqa: E402
 from config_loader import load_config  # noqa: E402
 from db.connection import connect, init_schema  # noqa: E402
@@ -177,7 +178,7 @@ def main() -> None:
         r["matched_expected"], r["verdict"] = judge(r)
 
     report = {"synthetic_data": True, "client": args.client, "model": client.name, "seed": args.seed,
-              "config_version": config.version, "prompt_version": "diagnosis_v1",
+              "config_version": config.version, "prompt_version": PROMPT_VERSION,
               "evidence_bundle": EVIDENCE_BUNDLE_VERSION, "results": results}
     out.write_text(json.dumps(report, indent=2) + "\n")
     print(f"SYNTHETIC DATA. client={args.client} model={client.name} seed={args.seed} -> {out}")
